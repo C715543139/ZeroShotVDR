@@ -1,0 +1,4 @@
+rendering:
+  backend: pypdfium2 # 固定使用 pypdfium2
+  scale: 2.0 # 渲染缩放因子
+  target_size: [672, 672] # 送入 ColPali 前 resize 到的目标尺寸
