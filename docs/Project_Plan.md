@@ -461,90 +461,36 @@ data/MMLongBench/
 
 ### 2.7 环境验证脚本
 
-创建 `scripts/check_env.py`，一键检测环境是否正确配置。
+项目提供两个验证脚本，均位于 `scripts/` 目录下。脚本的**唯一权威版本**以实际文件为准，下方仅作功能说明。
 
-> ⚠️ **导入顺序约束**：Windows 上 `pyarrow`（datasets/pandas 的依赖）与 `torch` 存在 C++ DLL 冲突，必须先 import datasets 再 import torch，详见 5.2.1 节。
+#### `scripts/check_env.py` —— 基础环境验证
 
-```python
-"""环境验证脚本。运行：python scripts/check_env.py
+一键检测以下项是否就绪：
 
-.. note::
-   导入顺序很重要：pyarrow（datasets/pandas 的依赖）与 torch 在 Windows 上存在
-   C++ DLL 冲突（access violation）。必须先导入 datasets/pandas/pyarrow，再导入
-   torch，否则 pyarrow 初始化时会崩溃。
-"""
-import os
-import sys
-from pathlib import Path
-from importlib import import_module
+| 检查项            | 内容                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| Python 版本       | 必须为 3.10.x                                                                               |
+| 轻量依赖导入      | numpy, yaml, tqdm, rich, PIL, pypdfium2, datasets（先于 torch 加载，避免 pyarrow DLL 冲突） |
+| CUDA & 深度学习栈 | CUDA 可用性、GPU 信息、显存容量；transformers, colpali_engine, einops 导入                  |
+| HF 缓存路径       | 输出项目内 `HF_HOME` / `HF_HUB_CACHE` / `HF_DATASETS_CACHE` 配置                            |
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-HF_HOME = PROJECT_ROOT / ".cache" / "huggingface"
-os.environ.setdefault("HF_HOME", str(HF_HOME))
-os.environ.setdefault("HF_HUB_CACHE", str(HF_HOME / "hub"))
-os.environ.setdefault("HF_DATASETS_CACHE", str(HF_HOME / "datasets"))
-# 环境检查脚本仅验证包可导入，无需连接 HuggingFace Hub
-# datasets / huggingface_hub 在 import 阶段可能发起网络请求，导致超时卡死
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+运行方式：从项目根目录执行 `python scripts/check_env.py`，预期全部项打印 `[PASS]`。
 
-def check_python():
-    """检查 Python 版本是否为 3.10.x"""
-    v = sys.version_info
-    assert v.major == 3 and v.minor == 10, f"需 Python 3.10.x，当前 {v.major}.{v.minor}"
-    print(f"[PASS] Python {v.major}.{v.minor}.{v.micro}")
+> ⚠️ 脚本以 `HF_HUB_OFFLINE=1` 运行，仅验证包导入，不连接 HuggingFace Hub，避免网络超时。
 
+#### `scripts/test_model_load.py` —— 模型加载与推理验证
 
-def check_imports_lightweight():
-    """先导入不依赖 torch/CUDA 的轻量包（避免 pyarrow DLL 冲突）"""
-    pkgs = [
-        "numpy", "yaml", "tqdm", "rich",
-        "PIL", "pypdfium2", "datasets",
-    ]
-    for pkg in pkgs:
-        try:
-            import_module(pkg)
-            print(f"[PASS] {pkg}")
-        except Exception as e:
-            print(f"[FAIL] {pkg}: {e}")
+在基础环境验证通过后，进一步验证 ColPali-v1.3 模型能否在 GPU 上正常加载并完成前向推理：
 
+| 验证项             | 内容                                                                                           |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| sitecustomize 补丁 | 确认 PEFT MoE 兼容性补丁已生效（解决 transformers v5 + PaliGemma 的 `KeyError: 'llava'` 问题） |
+| 模型加载           | `ColPali.from_pretrained("vidore/colpali-v1.3", device_map="cuda:0")`                          |
+| 图像编码           | 输入 PIL Image → 输出 patch embeddings `[n_patches, dim]`                                      |
+| 文本/查询编码      | 输入查询文本 → 输出 token embeddings `[n_tokens, dim]`                                         |
+| 显存报告           | 输出当前 CUDA 显存分配/缓存情况                                                                |
 
-def check_torch_and_ml():
-    """在轻量包加载之后再导入 torch 及 ML 栈"""
-    import torch  # noqa: F811  -- 延迟导入以避免 pyarrow DLL 冲突
-    assert torch.cuda.is_available(), "CUDA 不可用，请检查驱动与 PyTorch 安装"
-    print(f"[PASS] CUDA {torch.version.cuda} 可用")
-    print(f"       GPU: {torch.cuda.get_device_name(0)}")
-    gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
-    print(f"       显存: {gb:.1f} GB")
-
-    ml_pkgs = ["transformers", "colpali_engine", "einops"]
-    for pkg in ml_pkgs:
-        try:
-            import_module(pkg)
-            print(f"[PASS] {pkg}")
-        except Exception as e:
-            print(f"[FAIL] {pkg}: {e}")
-
-
-def check_hf_cache():
-    """输出 HuggingFace 缓存路径配置"""
-    print(f"[PASS] HF_HOME = {HF_HOME}")
-    print(f"[PASS] HF_HUB_CACHE = {HF_HOME / 'hub'}")
-    print(f"[PASS] HF_DATASETS_CACHE = {HF_HOME / 'datasets'}")
-
-
-if __name__ == "__main__":
-    print("=" * 50)
-    print("ZeroShotVDR 环境检查")
-    print("=" * 50)
-    check_python()
-    check_imports_lightweight()
-    check_torch_and_ml()
-    check_hf_cache()
-    print("=" * 50)
-    print("检查完成，全部通过。")
-```
+运行方式：从项目根目录执行 `python scripts/test_model_load.py`，预期输出"模型验证全部通过"。
 
 ---
 
@@ -1169,7 +1115,7 @@ class Evaluator:
 | colpali-engine | OK             | 纯 Python，依赖 transformers            |
 | pypdfium2      | OK             | 纯 Python，零系统依赖，Windows 首选方案 |
 | uv             | OK             | Windows 原生支持                        |
-| datasets       | ⚠️ 需注意      | 见下方 pyarrow DLL 冲突                 |
+| datasets       | 需注意         | 见下方 pyarrow DLL 冲突                 |
 
 #### 5.2.1 pyarrow 与 torch 的 C++ DLL 冲突（重要）
 
@@ -1180,11 +1126,11 @@ class Evaluator:
 **解决方案**：
 
 ```python
-# ✅ 正确顺序：先导入 datasets/pandas/pyarrow，再导入 torch
+# 正确顺序：先导入 datasets/pandas/pyarrow，再导入 torch
 import datasets   # 或 from datasets import ...
 import torch
 
-# ❌ 错误顺序：先导入 torch 再导入 datasets 会导致崩溃
+# 错误顺序：先导入 torch 再导入 datasets 会导致崩溃
 import torch
 import datasets   # ← access violation!
 ```

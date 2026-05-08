@@ -1,13 +1,12 @@
-"""Startup compatibility patches for the local research environment.
+"""本地研究环境的启动兼容性补丁。
 
-This repository relies on a transformers v5 + PEFT combination required by
-colpali-engine. Some released transformers versions route PaliGemma/LLaVA-like
-models through a MoE PEFT conversion path even though no MoE target mapping is
-defined, which raises ``KeyError: 'llava'`` while loading the ColPali adapter.
+此仓库依赖于 colpali-engine 所需的 transformers v5 + PEFT 组合。某些已发布的
+transformers 版本会将 PaliGemma/LLaVA 类模型路由到 MoE PEFT 转换路径，即使没
+有定义 MoE 目标映射，这会在加载 ColPali 适配器时引发 ``KeyError: 'llava'``。
 
-Python imports ``sitecustomize`` automatically on startup when this repository
-root is on ``sys.path``. Patching here keeps interactive `python` sessions and
-`uv run python` behavior aligned without editing files inside `.venv`.
+当此仓库根目录位于 ``sys.path`` 中时，Python 会在启动时自动导入 ``sitecustomize``。
+在此处打补丁可以使交互式 `python` 会话和 `uv run python` 行为保持一致，而无需编辑
+`.venv` 中的文件。
 """
 
 from __future__ import annotations
@@ -34,8 +33,8 @@ def _patch_transformers_peft_llava_conversion() -> None:
         if base_model_type is None:
             return peft_config
 
-        # Some visual model families are listed in the generic checkpoint
-        # conversion mapping but have no MoE-specific target mapping.
+        # 某些视觉模型系列在通用检查点转换映射中列出，
+        # 但没有 MoE 特定的目标映射。
         if moe_mapping.get(base_model_type) is None:
             return peft_config
 
