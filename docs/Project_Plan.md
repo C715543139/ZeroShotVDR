@@ -26,10 +26,12 @@
   - [Phase 4：进阶方法研究与实现（5.26 – 6.2）](#phase-4进阶方法研究与实现526--62)
   - [Phase 5：报告撰写与答辩准备（6.3 – 6.9）](#phase-5报告撰写与答辩准备63--69)
 - [四、核心模块接口设计](#四核心模块接口设计)
-  - [4.1 preprocess.py —— 文档预处理](#41-preprocesspy--文档预处理)
-  - [4.2 indexer.py —— 索引构建](#42-indexerpy--索引构建)
-  - [4.3 retriever.py —— 查询编码与检索](#43-retrieverpy--查询编码与检索)
-  - [4.4 evaluator.py —— 评测系统](#44-evaluatorpy--评测系统)
+  - [4.0 数据契约（contracts.py）](#40-数据契约contractspy)
+  - [4.1 数据接入层（data/）](#41-数据接入层data)
+  - [4.2 索引层（indexing/）](#42-索引层indexing)
+  - [4.3 检索层（retrieval/）](#43-检索层retrieval)
+  - [4.4 评测层（evaluation/）](#44-评测层evaluation)
+  - [4.5 设计决策说明](#45-设计决策说明)
 - [五、关键风险与注意事项](#五关键风险与注意事项)
   - [5.1 RTX 4060 Laptop 显存限制](#51-rtx-4060-laptop-显存限制)
   - [5.2 Windows 原生环境兼容性](#52-windows-原生环境兼容性)
@@ -40,6 +42,10 @@
 ---
 
 ## 一、推荐项目结构
+
+> **v1 修订说明**：模块从 `src/*.py` 扁平结构改为 `src/zeroshot_vdr/` 包内分层结构，
+> 以匹配当前仓库的实际包布局，并为 Phase 4 进阶方法预留扩展空间。
+> 核心设计遵循五层架构：数据接入 → 索引 → 检索 → 评测 → 配置支撑。
 
 ```
 ZeroShotVDR/
@@ -56,32 +62,49 @@ ZeroShotVDR/
 │       │   └── {doc_id}/
 │       │       ├── page_001.png
 │       │       └── page_002.png
-│       ├── metadata.json          # 页面元信息：doc_id, page_idx, image_path
+│       ├── corpus_meta.json       # 页面语料元信息（统一契约）
 │       └── index/                 # 离线索引
-│           ├── embeddings.pt      # patch-level embeddings（.pt 或 .npy）
-│           ├── index_meta.json    # 索引元信息：模型名称、维度、时间戳
-│           └── page_ids.json      # embedding<->页面 映射表
+│           ├── pages/             # 逐页 embedding 文件（每页独立 .pt）
+│           │   ├── {page_id}.pt
+│           │   └── ...
+│           ├── index_meta.json    # 索引元信息：模型名称、维度、时间戳、页数
+│           └── page_ids.json      # embedding<->页面 映射表（稳定 ID 契约）
 │
-├── src/                           # 核心源码
+├── src/zeroshot_vdr/              # 核心包（editable install）
 │   ├── __init__.py
-│   ├── preprocess.py              # PDF → 图像转换 + metadata 构建
-│   ├── indexer.py                 # ColPali 编码 + 索引构建/存储/加载
-│   ├── retriever.py               # 查询编码 + MaxSim 相似度 + Top-k 排序
-│   ├── evaluator.py               # Recall@k, Precision@k, MRR, nDCG@k
-│   ├── utils.py                   # 配置加载、日志、计时等通用工具
+│   ├── contracts.py               # 数据契约：Page, Query, RetrievalResult 等 dataclass
+│   ├── config.py                  # 配置加载与管理
+│   ├── utils.py                   # 日志、计时、路径等通用工具
+│   ├── data/                      # 数据接入层
+│   │   ├── __init__.py
+│   │   ├── corpus.py              # 页面语料构建（支持 DocumentQA、PDF 等多来源）
+│   │   └── adapters.py            # 数据集适配器（将不同数据格式转为统一契约）
+│   ├── indexing/                  # 索引层
+│   │   ├── __init__.py
+│   │   ├── encoder.py             # ColPali 页面编码器
+│   │   └── store.py               # 索引持久化与加载（支持多视图）
+│   ├── retrieval/                 # 检索执行层
+│   │   ├── __init__.py
+│   │   ├── encoder.py             # 查询编码器
+│   │   ├── scoring.py             # MaxSim 等相似度计算
+│   │   └── pipeline.py            # 检索流水线编排（候选召回 → 精排 → 结果组装）
+│   ├── evaluation/                # 评测层
+│   │   ├── __init__.py
+│   │   ├── metrics.py             # 指标实现（与数据集解耦）
+│   │   └── ground_truth.py        # Ground truth 加载与适配
 │   └── advanced/                  # 进阶改进方法
 │       ├── __init__.py
 │       ├── patch_pruner.py        # 候选方向 A：自适应索引压缩
 │       └── two_stage.py           # 候选方向 B：两阶段粗精检索
 │
 ├── config/
-│   └── default.yaml               # 全局配置文件（模型路径、参数等）
+│   └── default.yaml               # 全局配置文件（数据/模型/索引/检索/评测参数）
 
 ├── .cache/
 │   └── huggingface/               # 项目内 Hugging Face 缓存（模型/数据都放这里）
 │
-├── scripts/                       # 一键执行脚本（Windows .bat）
-│   ├── run_preprocess.bat
+├── scripts/                       # 一键执行脚本
+│   ├── run_corpus_build.bat
 │   ├── run_index.bat
 │   ├── run_retrieval.bat
 │   └── run_eval.bat
@@ -95,11 +118,14 @@ ZeroShotVDR/
 ├── docs/                          # 文档
 │   ├── NJUProject_VDR.md          # 课程任务说明
 │   ├── Proposal_VDR.md            # 开题报告
-│   └── Project_Plan.md            # 本文件：项目计划
+│   ├── Project_Plan.md            # 本文件：项目计划
+│   └── revision/                  # 修订记录
+│       └── core_module_revision_v1.md
 │
-├── pyproject.toml                 # uv 原生项目配置（替代 requirements.txt）
-├── uv.lock                        # 依赖锁定文件（uv sync 自动生成）
+├── pyproject.toml                 # uv 原生项目配置
+├── uv.lock                        # 依赖锁定文件
 ├── .python-version                # uv 读取，固定 Python 3.10
+├── sitecustomize.py               # PEFT MoE 兼容性补丁（Python 启动时自动加载）
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -338,10 +364,50 @@ pil_image = bitmap.to_pil()      # 转为 PIL Image（可直接送入 ColPali）
 **统一渲染参数**（在 `config/default.yaml` 中配置）：
 
 ```yaml
+# ===== 数据配置 =====
+data:
+  root_dir: "data/MMLongBench/raw"
+  subsets: ["docqa"] # Phase 2 主评测集，后续可扩展
+  page_id_template: "{subset}/{doc_id}/p{page_idx}"
+
+# ===== 预处理/渲染配置 =====
 rendering:
   backend: pypdfium2 # 固定使用 pypdfium2
   scale: 2.0 # 渲染缩放因子
   target_size: [672, 672] # 送入 ColPali 前 resize 到的目标尺寸
+
+# ===== 模型配置 =====
+model:
+  repo: "vidore/colpali-v1.3"
+  base_repo: "vidore/colpaligemma-3b-pt-448-base"
+  device: "cuda:0"
+  dtype: "bfloat16"
+
+# ===== 索引配置 =====
+index:
+  dir: "data/processed/index"
+  batch_size: 4 # 编码时 GPU batch size（适配 8GB 显存）
+  storage_dtype: "float16" # 落盘精度
+  per_page_files: true # 是否每页独立存储（v1 修订后固定为 true）
+
+# ===== 检索配置 =====
+retrieval:
+  top_k_values: [1, 3, 5, 10]
+  score_batch_size: 64 # MaxSim 时每批处理页面数
+  candidate_strategy: "full" # baseline=full; Phase 4 可切换为 "mean_pool_top50"
+
+# ===== 评测配置 =====
+evaluation:
+  k_values: [1, 3, 5, 10]
+  output_dir: "outputs/eval_reports"
+
+# ===== 路径配置 =====
+paths:
+  hf_home: ".cache/huggingface"
+  hf_hub_cache: ".cache/huggingface/hub"
+  hf_datasets_cache: ".cache/huggingface/datasets"
+  image_output: "data/processed/images"
+  corpus_meta: "data/processed/corpus_meta.json"
 ```
 
 ---
@@ -520,11 +586,11 @@ data/MMLongBench/
 
 #### Step 1.3 数据集探索
 
-- [ ] 统计 MMLongBench 数据规模（PDF 数量、总页数、查询数）
-- [ ] 抽样查看 PDF 页面（版式类型：纯文/表格/图表/混合）
-- [ ] 理解标注格式（ground truth 如何标记相关页面）
-- [ ] 确认 MMLongBench 子任务能否直接映射为页级检索；若不能，需在 Phase 1 明确重构标注或更换数据集
-- [ ] 确认训练集 / 测试集划分
+- [ ] 统计 MMLongBench 数据规模：重点确认 DocumentQA 子集的文档数、页面数、查询数
+- [ ] 理解 DocumentQA 标注格式：`page_list`（页面图像路径列表）、`ans_page_list`（答案所在页面列表）和 `answer` 字段如何映射为页级检索 ground truth
+- [ ] 抽样查看 DocumentQA 页面图像（版式类型：纯文/表格/图表/混合）
+- [ ] 确认各 length 档位（K4/K8/K16/K32/K64/K128）的页面规模差异
+- [ ] 确认训练集 / 测试集划分（MMLongBench 是否仅提供测试集）
 
 #### Phase 1 产出
 
@@ -535,78 +601,105 @@ data/MMLongBench/
 
 ### Phase 2：基础系统实现（5.13 – 5.22）
 
-**目标**：实现完整的 ColPali-based 页级检索管线，跑通端到端流程。
+**目标**：实现完整的 ColPali-based 页级检索管线，以 DocumentQA 子集为主评测集跑通端到端流程。优先打通"数据集适配 → 语料构建 → 索引 → 检索 → 评测"闭环，PDF 渲染作为辅助数据源后补。
 
-> ⚠️ **开发前置须知**：所有同时使用 `datasets` 与 `torch` 的模块，必须在文件顶部
-> `import datasets`（或 `import pandas`）**先于** `import torch`，否则会触发
-> pyarrow C++ DLL 冲突导致进程崩溃。详见 5.2.1 节。
+> ⚠️ **开发前置须知**：
+>
+> 1. 所有同时使用 `datasets` 与 `torch` 的模块，必须在文件顶部
+>    `import datasets`（或 `import pandas`）**先于** `import torch`，否则会触发
+>    pyarrow C++ DLL 冲突导致进程崩溃。详见 5.2.1 节。
+> 2. 建议将数据读取层与模型层分属不同模块文件，从物理上规避导入顺序问题：
+>    `data/` 层依赖 `datasets`，`indexing/` 和 `retrieval/` 层依赖 `torch`，
+>    跨层调用通过函数传参而非顶层 import 混合。
 
-#### Step 2.1 文档预处理（成员 A） —— 3 天
+#### Step 2.1 数据接入与语料构建（成员 A） —— 3 天
 
-**文件**：`src/preprocess.py`
+**文件**：`src/zeroshot_vdr/data/corpus.py`, `src/zeroshot_vdr/data/adapters.py`, `src/zeroshot_vdr/contracts.py`
 
-| 子步骤 | 内容                                                                   |
-| ------ | ---------------------------------------------------------------------- |
-| 2.1.1  | 实现 `PDFProcessor` 类：读取 PDF，调用 pypdfium2 将每页渲染为图像      |
-| 2.1.2  | 统一图像分辨率（建议 448x448 或 672x672，对齐 ColPali 输入）           |
-| 2.1.3  | 构建 `metadata.json`：记录 doc_id、page_idx、image_path、original_size |
-| 2.1.4  | 实现批量处理脚本：遍历 PDF 目录，支持断点续传（跳过已处理）            |
+| 子步骤 | 内容                                                                                                                                                         |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, page_idx, image_path）、`Query`（query_id, text）、`RelevanceJudgment`（query_id, page_id, relevance） |
+| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约             |
+| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{subset}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                       |
+| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                       |
 
 **预期 API**：
 
 ```python
-# src/preprocess.py
-class PDFProcessor:
-    def __init__(self, pdf_dir: str, output_dir: str):
-        ...
-    def process_all(self) -> dict:  # 返回 metadata
-        ...
-    def process_one(self, pdf_path: str) -> list[dict]:
-        ...
+# src/zeroshot_vdr/contracts.py
+@dataclass
+class Page:
+    page_id: str       # 稳定唯一标识，如 "docqa/longdocurl_K4/p3"
+    doc_id: str
+    page_idx: int
+    image_path: str
+    source_subset: str # 数据来源（docqa / icl / niah / ...）
+
+@dataclass
+class Query:
+    query_id: str
+    text: str
+    source_subset: str
+
+# src/zeroshot_vdr/data/corpus.py
+class PageCorpus:
+    def __init__(self, config): ...
+    def build_from_adapters(self) -> list[Page]: ...
+    def save_metadata(self, path: str) -> str: ...
+    @classmethod
+    def load_metadata(cls, path: str) -> list[Page]: ...
 ```
 
 #### Step 2.2 索引构建（成员 A） —— 4 天
 
-**文件**：`src/indexer.py`
+**文件**：`src/zeroshot_vdr/indexing/encoder.py`, `src/zeroshot_vdr/indexing/store.py`
 
-| 子步骤 | 内容                                                                                        |
-| ------ | ------------------------------------------------------------------------------------------- |
-| 2.2.1  | 加载 ColPali-v1.3 模型（`colpali_engine.models.ColPali`）                                   |
-| 2.2.2  | 实现 `PageEncoder`：逐页编码图像 -> patch embeddings                                        |
-| 2.2.3  | 处理显存友好的 batching：每次加载 N 张图像（建议 batch_size=4~8 for 8GB VRAM）              |
-| 2.2.4  | 设计索引存储格式：`embeddings.pt`（shape: [total_pages, n_patches, dim]） + `page_ids.json` |
-| 2.2.5  | 支持增量索引：检测新增/变更页面，仅编码新增部分                                             |
-| 2.2.6  | 记录索引构建耗时与存储大小                                                                  |
+| 子步骤 | 内容                                                                                                                                                                |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.2.1  | 加载 ColPali-v1.3 模型（`colpali_engine.models.ColPali`）                                                                                                           |
+| 2.2.2  | 实现 `PageEncoder`：逐页编码图像 → patch embeddings `[n_patches, dim]`                                                                                              |
+| 2.2.3  | 处理显存友好的 batching：每次加载 N 张图像（建议 batch_size=2~4 for 8GB VRAM）                                                                                      |
+| 2.2.4  | **索引存储**：每页独立存储为 `{page_id}.pt`（shape `[n_patches, dim]`），而非单一巨型张量。此设计支持：（a）真增量追加，（b）后续 patch pruning 后各页 patch 数不同 |
+| 2.2.5  | `IndexStore` 类统一管理索引的构建、加载、增量更新，产出 `page_ids.json`（page_id → 文件路径映射）和 `index_meta.json`                                               |
+| 2.2.6  | 记录索引构建耗时与存储大小；支持断点续建                                                                                                                            |
 
 **预期 API**：
 
 ```python
-# src/indexer.py
-class IndexBuilder:
-    def __init__(self, model, metadata: dict, index_dir: str):
-        ...
-    def build_index(self, batch_size: int = 4) -> None:
-        ...
-    def load_index(self) -> tuple[torch.Tensor, list[dict]]:
-        ...
+# src/zeroshot_vdr/indexing/encoder.py
+class PageEncoder:
+    def __init__(self, model, batch_size: int = 4, dtype=torch.float16): ...
+    def encode_batch(self, images: list[Image.Image]) -> torch.Tensor: ...
+    def encode_corpus(self, pages: list[Page], store: "IndexStore") -> None: ...
+
+# src/zeroshot_vdr/indexing/store.py
+class IndexStore:
+    def __init__(self, index_dir: str): ...
+    def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
+    def read_page(self, page_id: str) -> torch.Tensor: ...
+    def read_all(self, page_ids: list[str] | None = None) -> tuple[torch.Tensor, list[str]]: ...
+    def list_page_ids(self) -> list[str]: ...
+    @property
+    def stats(self) -> dict: ...
 ```
 
 #### Step 2.3 查询编码与检索（成员 B） —— 4 天
 
-**文件**：`src/retriever.py`
+**文件**：`src/zeroshot_vdr/retrieval/encoder.py`, `src/zeroshot_vdr/retrieval/scoring.py`, `src/zeroshot_vdr/retrieval/pipeline.py`
 
-| 子步骤 | 内容                                                                                               |
-| ------ | -------------------------------------------------------------------------------------------------- |
-| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens -> embeddings）                              |
-| 2.3.2  | 实现 **MaxSim 相似度**：对查询中每个 token，找到页面 patch 中最高相似度，求和                      |
-| 2.3.3  | **显存优化**：避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵，改为逐页/分批计算 |
-| 2.3.4  | 实现 Top-k 排序（k = 1, 3, 5, 10），返回 `[(doc_id, page_idx, score)]`                             |
-| 2.3.5  | 记录单次查询平均延迟                                                                               |
+| 子步骤 | 内容                                                                                                                                                                               |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）                                                                                             |
+| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。独立为 `scoring.py`，便于后续替换或扩展打分函数                                                 |
+| 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                    |
+| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。Baseline 中候选召回=全量（等价于直接打分），但流水线结构已为 Phase 4 两阶段检索预留扩展点 |
+| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(page_id, score, rank)]`                                                                                                      |
+| 2.3.6  | 记录单次查询平均延迟                                                                                                                                                               |
 
 **MaxSim 公式**：
 
 ```
-Score(Q, P) = Sigma_i max_j Sim(q_i, p_j)
+Score(Q, P) = Σ_i max_j Sim(q_i, p_j)
 
 其中：
 - Q = {q_1, ..., q_m} 为查询的 m 个 token embeddings
@@ -617,28 +710,33 @@ Score(Q, P) = Sigma_i max_j Sim(q_i, p_j)
 **预期 API**：
 
 ```python
-# src/retriever.py
-class ColPaliRetriever:
-    def __init__(self, model):
-        ...
-    def encode_query(self, query: str) -> torch.Tensor:
-        ...
-    def retrieve(self, query_emb: torch.Tensor,
-                 index_emb: torch.Tensor,
-                 top_k: int = 10) -> list[dict]:
-        ...
+# src/zeroshot_vdr/retrieval/scoring.py
+def maxsim_score(query_emb: torch.Tensor, page_emb: torch.Tensor) -> torch.Tensor:
+    """返回标量 score"""
+    ...
+
+def batched_maxsim(query_emb: torch.Tensor, pages_emb: torch.Tensor) -> torch.Tensor:
+    """返回 [batch_size] scores"""
+    ...
+
+# src/zeroshot_vdr/retrieval/pipeline.py
+class RetrievalPipeline:
+    def __init__(self, model, index_store: IndexStore, config: dict): ...
+    def encode_query(self, query: str) -> torch.Tensor: ...
+    def retrieve(self, query: str | torch.Tensor, top_k: int = 10) -> list[RetrievalResult]: ...
+    def retrieve_batch(self, queries: list[str], top_k: int = 10) -> list[list[RetrievalResult]]: ...
 ```
 
 #### Step 2.4 评测系统（成员 B） —— 2 天
 
-**文件**：`src/evaluator.py`
+**文件**：`src/zeroshot_vdr/evaluation/metrics.py`, `src/zeroshot_vdr/evaluation/ground_truth.py`
 
-| 子步骤 | 内容                                                                  |
-| ------ | --------------------------------------------------------------------- |
-| 2.4.1  | 加载 MMLongBench 测试集 ground truth                                  |
-| 2.4.2  | 实现 4 项指标计算：**Recall@k**、**Precision@k**、**MRR**、**nDCG@k** |
-| 2.4.3  | 编写批量评测脚本：遍历测试查询 -> 检索 -> 对比 ground truth           |
-| 2.4.4  | 输出结果：CSV 汇总表 + JSON 详细结果                                  |
+| 子步骤 | 内容                                                                                                                                                                          |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.4.1  | `ground_truth.py`：加载 MMLongBench 测试集标注，转为统一格式 `{query_id: set[page_id]}`。适配逻辑与指标计算分离，后续新增子集只需增加适配器                                   |
+| 2.4.2  | `metrics.py`：实现 4 项指标计算——**Recall@k**、**Precision@k**、**MRR**、**nDCG@k**。指标函数接受 `(retrieved_page_ids, relevant_page_ids, k)` 的标准化输入，与具体数据集解耦 |
+| 2.4.3  | 编写批量评测脚本：遍历测试查询 → 检索 → 对比 ground truth                                                                                                                     |
+| 2.4.4  | 输出结果：CSV 汇总表 + JSON 详细结果                                                                                                                                          |
 
 **指标定义**：
 
@@ -652,21 +750,27 @@ class ColPaliRetriever:
 **预期 API**：
 
 ```python
-# src/evaluator.py
-class Evaluator:
-    def __init__(self, ground_truth: dict):
-        ...
-    def compute_metrics(self, results: dict, k_values: list[int]) -> pd.DataFrame:
-        ...
+# src/zeroshot_vdr/evaluation/metrics.py
+def recall_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
+def precision_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
+def mrr(retrieved: list[str], relevant: set[str]) -> float: ...
+def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
+
+# src/zeroshot_vdr/evaluation/ground_truth.py
+class GroundTruthLoader:
+    def __init__(self, config): ...
+    def load(self, subset: str | None = None) -> dict[str, set[str]]: ...
+    # 返回 {query_id: {relevant_page_id, ...}}
 ```
 
 #### Phase 2 产出
 
-- [ ] `src/preprocess.py`：可运行的 PDF->图像 转换脚本
-- [ ] `src/indexer.py`：可离线构建 & 加载索引
-- [ ] `src/retriever.py`：查询->Top-k 结果端到端
-- [ ] `src/evaluator.py`：四项指标计算
-- [ ] `config/default.yaml`：全局配置
+- [ ] `src/zeroshot_vdr/contracts.py`：数据契约定义
+- [ ] `src/zeroshot_vdr/data/`：DocumentQA 适配器 + 语料构建可用
+- [ ] `src/zeroshot_vdr/indexing/`：可离线构建 & 加载索引，每页独立存储
+- [ ] `src/zeroshot_vdr/retrieval/`：流水线式检索，查询→Top-k 结果端到端
+- [ ] `src/zeroshot_vdr/evaluation/`：四项指标计算，与数据集解耦
+- [ ] `config/default.yaml`：全局配置（数据/模型/索引/检索/评测参数全覆盖）
 - [ ] `scripts/` 下各 bat 脚本可用
 
 ---
@@ -713,7 +817,7 @@ class Evaluator:
 | 4A.3 | 实验中对比不同 m 值下的 检索性能 vs 存储开销           |
 | 4A.4 | 目标：Recall@5 下降 <= 2%，索引缩减 >= 50%             |
 
-**文件**：`src/advanced/patch_pruner.py`
+**文件**：`src/zeroshot_vdr/advanced/patch_pruner.py`
 
 #### 候选方向 B：两阶段粗精检索
 
@@ -724,7 +828,7 @@ class Evaluator:
 | 4B.3 | 对比不同候选集规模下的速度与精度                               |
 | 4B.4 | 目标：精度无损（Recall@5 下降 <= 1%），检索延迟降低 >= 3x      |
 
-**文件**：`src/advanced/two_stage.py`
+**文件**：`src/zeroshot_vdr/advanced/two_stage.py`
 
 #### 实验设计（两方向通用）
 
@@ -734,7 +838,7 @@ class Evaluator:
 
 #### Phase 4 产出
 
-- [ ] `src/advanced/` 目录下改进代码
+- [ ] `src/zeroshot_vdr/advanced/` 目录下改进代码
 - [ ] 对比实验表格（指标 + 效率）
 - [ ] 消融实验结果
 - [ ] 实验中发现的任何 insight（写入报告）
@@ -781,307 +885,510 @@ class Evaluator:
 
 ## 四、核心模块接口设计
 
-### 4.1 preprocess.py —— 文档预处理
+> **v1 修订说明**：本章根据 `docs/revision/core_module_revision_v1.md` 进行了重构。
+> 核心变化：（1）预处理层从"PDF 渲染"转向"语料构建 + 数据适配"；
+> （2）索引存储从单一巨型张量改为每页独立文件，支持变长 patch 数；
+> （3）检索层从单一 Retriever 类改为分环节流水线；
+> （4）评测层将指标计算与数据集适配解耦；
+> （5）新增显式的数据契约层，统一页面/查询/结果标识体系。
+
+---
+
+### 4.0 数据契约（`contracts.py`）
+
+所有模块间传递的核心对象统一使用以下 dataclass，确保 page_id / query_id 在索引、检索、评测全链路中一致。
 
 ```python
 """
-文档预处理：PDF -> 按页图像 + metadata。
-使用 pypdfium2 作为 PDF 渲染引擎（纯 Python，零系统依赖）。
+数据契约：定义系统中跨模块传递的核心数据结构。
+所有 page_id / query_id 均为稳定字符串，贯穿索引→检索→评测全链路。
 """
 
-from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass
-class PageMeta:
-    """单页元信息"""
-    doc_id: str
-    page_idx: int
-    image_path: str
-    original_width: int
-    original_height: int
-    rendered_width: int
-    rendered_height: int
+class Page:
+    """页面语料中的单页。"""
+    page_id: str           # 稳定唯一标识，格式: {subset}/{doc_id}/p{page_idx}
+    doc_id: str            # 所属文档标识
+    page_idx: int          # 文档内页码（0-based）
+    image_path: str        # 页面图像文件路径
+    source_subset: str     # 数据来源子集（docqa / icl / niah / summ / vrag）
 
 
-class PDFProcessor:
+@dataclass
+class Query:
+    """单条检索查询。"""
+    query_id: str          # 稳定唯一标识
+    text: str              # 查询文本
+    source_subset: str     # 所属数据子集
+
+
+@dataclass
+class RetrievalResult:
+    """单条检索命中结果。"""
+    page_id: str           # 命中页面的稳定 ID
+    score: float           # 相似度分数
+    rank: int              # 排名（1-based）
+
+
+@dataclass
+class RelevanceJudgment:
+    """单条标注：某查询对某页面的相关性。"""
+    query_id: str
+    page_id: str
+    relevance: int         # 0/1 或分级相关度
+```
+
+---
+
+### 4.1 数据接入层（`data/`）
+
+**设计原则**：将不同来源的数据组织方式（DocumentQA 的 page_list、PDF 文件等）统一转为 `Page` / `Query` / `RelevanceJudgment` 契约。数据来源差异封装在适配器内部，不传播到索引、检索和评测层。
+
+```python
+"""
+数据接入层：从 MMLongBench 等数据源构建统一的页面语料与查询集。
+优先支持 DocumentQA 子集（page_list + ans_page_list），
+同时预留 PDF 渲染适配器供扩展。
+"""
+
+from pathlib import Path
+from typing import Iterator
+from zeroshot_vdr.contracts import Page, Query, RelevanceJudgment
+
+
+class BaseAdapter:
+    """数据集适配器基类：将不同数据格式转为统一契约。"""
+
+    def iter_pages(self) -> Iterator[Page]: ...
+    def iter_queries(self) -> Iterator[Query]: ...
+    def iter_judgments(self) -> Iterator[RelevanceJudgment]: ...
+
+
+class DocumentQAAdapter(BaseAdapter):
     """
-    PDF 页面渲染器（基于 pypdfium2）。
+    MMLongBench DocumentQA 子集适配器。
+
+    输入：mmlb_data/documentQA/ 下的 JSONL 文件（含 page_list + ans_page_list）。
+    输出：Page（page_id = "docqa/{filename}/{doc_id}/p{idx}"）、
+          Query、RelevanceJudgment。
+    """
+
+    def __init__(self, data_dir: str, subset_filter: str | None = None): ...
+    def iter_pages(self) -> Iterator[Page]: ...
+    def iter_queries(self) -> Iterator[Query]: ...
+    def iter_judgments(self) -> Iterator[RelevanceJudgment]: ...
+
+
+class PDFAdapter(BaseAdapter):
+    """
+    PDF 页面渲染适配器（基于 pypdfium2）。
+    用于从原始 PDF 文件构建页面语料（非 DocumentQA 路径时使用）。
 
     Parameters
     ----------
     pdf_dir : str
-        存放 PDF 的根目录。
     output_dir : str
-        图像输出目录。
-    target_size : tuple[int, int], optional
-        送入模型前的目标尺寸 (width, height)。默认 (672, 672)。
-    scale : float, optional
-        pypdfium2 渲染时的缩放因子。默认 2.0（约 144 DPI）。
+    target_size : tuple[int, int]
+    scale : float
     """
 
-    def __init__(
-        self,
-        pdf_dir: str,
-        output_dir: str,
-        target_size: tuple[int, int] = (672, 672),
-        scale: float = 2.0,
-    ) -> None: ...
+    def __init__(self, pdf_dir: str, output_dir: str,
+                 target_size: tuple[int, int] = (672, 672),
+                 scale: float = 2.0): ...
+    def iter_pages(self) -> Iterator[Page]: ...
 
-    def process_all(self, force: bool = False) -> list[PageMeta]:
-        """
-        处理所有 PDF。
 
-        Parameters
-        ----------
-        force : bool
-            True 时强制重新处理已存在的页面。
+class PageCorpus:
+    """
+    页面语料聚合器。
 
-        Returns
-        -------
-        list[PageMeta]
-            全部页面的元信息列表。
-        """
+    职责：
+    1. 聚合多个 Adapter 产出的 Page
+    2. 为每个 Page 分配稳定的 page_id
+    3. 持久化 corpus_meta.json
+    """
+
+    def __init__(self, config: dict): ...
+
+    def build(self, adapters: list[BaseAdapter]) -> list[Page]:
+        """从多个适配器构建统一页面语料。"""
         ...
 
-    def process_one(self, pdf_path: str) -> list[PageMeta]:
-        """处理单个 PDF 的所有页面。"""
+    def save_metadata(self, path: str | None = None) -> str:
+        """保存 corpus_meta.json。返回文件路径。"""
         ...
 
-    def save_metadata(self, path: Optional[str] = None) -> str:
-        """将 metadata 保存为 JSON。返回文件路径。"""
+    @classmethod
+    def load_metadata(cls, path: str) -> list[Page]:
+        """加载 corpus_meta.json 还原 Page 列表。"""
         ...
 ```
 
-### 4.2 indexer.py —— 索引构建
+---
+
+### 4.2 索引层（`indexing/`）
+
+**设计原则**：
+
+1. 编码（encoder）与存储（store）在抽象上分离，便于后续替换编码器或存储后端。
+2. 每页独立存储为一个 `.pt` 文件（`{page_id}.pt`），而非单一巨型张量。这样天然支持：
+   - 增量追加（新页直接写入新文件）
+   - Patch pruning 后各页 patch 数不同的场景
+   - 按需加载（两阶段检索中粗筛阶段可只加载均值池化视图）
 
 ```python
 """
-索引构建：使用 ColPali 编码页面图像，存储为离线索引。
+索引层：使用 ColPali 编码页面图像，并以逐页独立文件形式持久化。
 """
 
 import torch
-from pathlib import Path
-from typing import Iterator
+from PIL import Image
+from zeroshot_vdr.contracts import Page
 
-class IndexBuilder:
+
+class PageEncoder:
     """
-    ColPali 页面索引构建器。
+    ColPali 页面编码器。
 
     Parameters
     ----------
     model : ColPali
-        已加载的 ColPali 模型实例。
-    metadata : list[PageMeta]
-        preprocess 产出的页面元信息列表。
-    index_dir : str
-        索引存储目录。
-    batch_size : int, optional
-        GPU 推理批次大小（默认 4，适配 8GB 显存）。
-    dtype : torch.dtype, optional
-        embedding 存储精度（默认 float16）。
+    batch_size : int
+    dtype : torch.dtype
+    device : str
     """
 
-    def __init__(
-        self,
-        model,
-        metadata: list,
-        index_dir: str,
-        batch_size: int = 4,
-        dtype: torch.dtype = torch.float16,
-    ) -> None: ...
+    def __init__(self, model, batch_size: int = 4,
+                 dtype: torch.dtype = torch.float16,
+                 device: str = "cuda:0"): ...
 
-    def build_index(self) -> None:
-        """
-        构建全量索引。
-        产出：
-        - {index_dir}/embeddings.pt  (torch.Tensor: [n_pages, n_patches, dim])
-        - {index_dir}/page_ids.json  (list[dict]: doc_id, page_idx, idx)
-        - {index_dir}/index_meta.json
-        """
+    def encode_single(self, image: Image.Image) -> torch.Tensor:
+        """编码单张页面图像 → [n_patches, dim]"""
         ...
 
-    def load_index(self) -> tuple[torch.Tensor, list[dict]]:
-        """
-        加载已构建的索引。
-
-        Returns
-        -------
-        tuple[torch.Tensor, list[dict]]
-            (embeddings tensor, page_id mapping)
-        """
+    def encode_batch(self, images: list[Image.Image]) -> torch.Tensor:
+        """编码一批图像 → [batch, n_patches, dim]"""
         ...
 
-    def incremental_update(self, new_metadata: list) -> int:
-        """
-        增量更新索引：仅编码新增页面。
-        返回新增页面数。
-        """
+    def encode_corpus(self, pages: list[Page],
+                      store: "IndexStore",
+                      show_progress: bool = True) -> None:
+        """遍历页面语料，逐批编码并写入索引存储。"""
         ...
 
+
+class IndexStore:
+    """
+    索引持久化存储。
+
+    存储布局：
+        {index_dir}/
+        ├── pages/
+        │   ├── {page_id}.pt    # torch.Tensor [n_patches, dim]
+        │   └── ...
+        ├── page_ids.json       # [page_id, ...] 有序列表
+        └── index_meta.json     # 模型名、维度、时间戳、总页数
+
+    支持的操作：写入、读取（单页/批量/全量）、增量追加、统计。
+    """
+
+    def __init__(self, index_dir: str): ...
+
+    # -- 写入 --
+    def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
+    def write_batch(self, page_ids: list[str],
+                    embeddings: torch.Tensor) -> None: ...
+
+    # -- 读取 --
+    def read_page(self, page_id: str) -> torch.Tensor: ...
+    def read_batch(self, page_ids: list[str]) -> torch.Tensor:
+        """返回 [len(page_ids), n_patches, dim]（需各页 patch 数相同）"""
+        ...
+    def read_all(self) -> tuple[torch.Tensor, list[str]]:
+        """返回 (stacked_tensor, page_id_list)。
+        仅当全量页面 patch 数相同时可用；变长场景请逐页读取。"""
+        ...
+
+    def list_page_ids(self) -> list[str]: ...
+
+    # -- 视图 --
+    def get_mean_pooled_view(self) -> tuple[torch.Tensor, list[str]]:
+        """返回全量页面的均值池化向量 [n_pages, dim]，供两阶段粗筛使用。"""
+        ...
+
+    # -- 元信息 --
     @property
-    def index_stats(self) -> dict:
-        """索引统计：总页数、维度、文件大小、构建耗时。"""
+    def stats(self) -> dict:
+        """{num_pages, dim, total_size_mb, build_time_sec, ...}"""
         ...
 ```
 
-### 4.3 retriever.py —— 查询编码与检索
+---
+
+### 4.3 检索层（`retrieval/`）
+
+**设计原则**：检索不是单一步骤，而是"查询编码 → 候选召回 → 精排打分 → 结果组装"的流水线。Baseline 中候选召回=全量（等价于直接全量 MaxSim），但流水线结构已为 Phase 4 两阶段检索预留扩展点。
 
 ```python
 """
-查询编码与检索：文本查询 -> MaxSim 相似度 -> Top-k 页面。
+检索层：查询编码 → 候选召回 → MaxSim 精排 → Top-k 结果组装。
 """
 
 import torch
+from zeroshot_vdr.contracts import Page, RetrievalResult
+from zeroshot_vdr.indexing.store import IndexStore
 
-class ColPaliRetriever:
+
+class QueryEncoder:
+    """ColPali 查询编码器。"""
+
+    def __init__(self, model): ...
+    def encode(self, query: str) -> torch.Tensor:
+        """文本查询 → [n_tokens, dim]"""
+        ...
+
+
+# -- 打分函数（scoring.py） --
+
+def maxsim_score(query_emb: torch.Tensor, page_emb: torch.Tensor) -> torch.Tensor:
     """
-    ColPali 检索器。
+    MaxSim 相似度（单页）。
 
     Parameters
     ----------
-    model : ColPali
-        已加载的 ColPali 模型实例。
-    index_embeddings : torch.Tensor, optional
-        预加载的页面索引 [n_pages, n_patches, dim]。
-        若为 None，需在 retrieve() 时传入。
-    page_ids : list[dict], optional
-        页面 ID 映射表。
+    query_emb : [n_tokens, dim]
+    page_emb : [n_patches, dim]
+
+    Returns
+    -------
+    torch.Tensor : 标量 score
+    """
+    ...
+
+def batched_maxsim(query_emb: torch.Tensor,
+                   pages_emb: torch.Tensor) -> torch.Tensor:
+    """
+    批量 MaxSim。
+
+    Parameters
+    ----------
+    query_emb : [n_tokens, dim]
+    pages_emb : [batch_size, n_patches, dim]
+
+    Returns
+    -------
+    torch.Tensor : [batch_size] scores
+    """
+    ...
+
+
+# -- 检索流水线（pipeline.py） --
+
+class RetrievalPipeline:
+    """
+    检索流水线编排器。
+
+    流程：
+    1. encode_query(query)      → query embedding
+    2. generate_candidates()    → 候选 page_id 列表（baseline = 全量）
+    3. score_candidates()       → 对候选逐批 MaxSim 打分
+    4. assemble_results(top_k)  → 排序、截断、封装为 RetrievalResult 列表
+
+    Phase 4 中可通过替换 generate_candidates() 策略接入两阶段检索。
     """
 
-    def __init__(
-        self,
-        model,
-        index_embeddings: torch.Tensor | None = None,
-        page_ids: list[dict] | None = None,
-    ) -> None: ...
+    def __init__(self, model, index_store: IndexStore,
+                 query_encoder: QueryEncoder | None = None,
+                 config: dict | None = None): ...
 
-    def encode_query(self, query: str) -> torch.Tensor:
-        """
-        将文本查询编码为 token embeddings。
+    def encode_query(self, query: str) -> torch.Tensor: ...
 
-        Returns
-        -------
-        torch.Tensor
-            Query embedding [n_tokens, dim]。
-        """
-        ...
-
-    def retrieve(
-        self,
-        query: str | torch.Tensor,
-        top_k: int = 10,
-        index_embeddings: torch.Tensor | None = None,
-        batch_size: int = 64,
-    ) -> list[dict]:
+    def retrieve(self, query: str | torch.Tensor,
+                 top_k: int = 10,
+                 candidate_ids: list[str] | None = None,
+                 score_batch_size: int = 64) -> list[RetrievalResult]:
         """
         检索 Top-k 相关页面。
 
         Parameters
         ----------
         query : str | torch.Tensor
-            文本查询或预编码的 query embedding。
         top_k : int
-            返回结果数量。
-        index_embeddings : torch.Tensor, optional
-            覆盖实例级别的索引（用于两阶段检索）。
-        batch_size : int
+        candidate_ids : list[str] | None
+            候选页面列表；为 None 时默认全量检索。
+        score_batch_size : int
             逐批计算 MaxSim 的页面 batch 大小。
 
         Returns
         -------
-        list[dict]
-            [{doc_id, page_idx, score, rank}, ...] 按 score 降序。
+        list[RetrievalResult]
         """
         ...
 
-    def _maxsim(
-        self,
-        query_emb: torch.Tensor,
-        page_emb: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        MaxSim 相似度计算（单批）。
+    def retrieve_batch(self, queries: list[str],
+                       top_k: int = 10,
+                       **kwargs) -> list[list[RetrievalResult]]: ...
 
-        Parameters
-        ----------
-        query_emb : [n_tokens, dim]
-        page_emb : [batch_size, n_patches, dim]
-
-        Returns
-        -------
-        torch.Tensor
-            scores [batch_size]。
+    def generate_candidates(self, query_emb: torch.Tensor,
+                            top_n: int | None = None) -> list[str]:
         """
+        候选召回阶段。
+        Baseline：返回全量 page_ids。
+        Phase 4：可替换为均值池化粗筛。
+        """
+        ...
+
+    def score_candidates(self, query_emb: torch.Tensor,
+                         candidate_ids: list[str],
+                         batch_size: int = 64) -> torch.Tensor:
+        """对候选集逐批 MaxSim 打分，返回 [n_candidates] scores。"""
         ...
 ```
 
-### 4.4 evaluator.py —— 评测系统
+---
+
+### 4.4 评测层（`evaluation/`）
+
+**设计原则**：
+
+1. 指标计算函数接受标准化输入 `(retrieved_page_ids, relevant_page_ids, k)`，与具体数据集解耦。
+2. Ground truth 的加载和格式转换在独立模块中完成，新增评测子集只需增加适配逻辑。
 
 ```python
 """
-评测系统：Recall@k, Precision@k, MRR, nDCG@k。
+评测层：指标计算与 ground truth 加载。
 """
 
 import pandas as pd
+from zeroshot_vdr.contracts import RetrievalResult
 
-class Evaluator:
+
+# -- 指标计算（metrics.py） --
+
+def recall_at_k(retrieved: list[str], relevant: set[str], k: int) -> float:
+    """Recall@k = |retrieved[:k] ∩ relevant| / |relevant|"""
+    ...
+
+def precision_at_k(retrieved: list[str], relevant: set[str], k: int) -> float:
+    """Precision@k = |retrieved[:k] ∩ relevant| / k"""
+    ...
+
+def mrr(retrieved: list[str], relevant: set[str]) -> float:
+    """Mean Reciprocal Rank：首个相关页面的倒数排名"""
+    ...
+
+def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float:
+    """Normalized DCG@k"""
+    ...
+
+def compute_all_metrics(
+    retrieval_results: dict[str, list[RetrievalResult]],
+    ground_truth: dict[str, set[str]],
+    k_values: list[int] = [1, 3, 5, 10],
+) -> pd.DataFrame:
     """
-    检索评测器。
+    批量计算全部指标。
 
     Parameters
     ----------
-    ground_truth : dict
-        MMLongBench 测试集标注。格式：
-        {query_id: [relevant_page_id, ...], ...}
-    k_values : list[int], optional
-        评测的 k 值列表。默认 [1, 3, 5, 10]。
+    retrieval_results : {query_id: [RetrievalResult, ...]}
+    ground_truth : {query_id: {relevant_page_id, ...}}
+    k_values : list[int]
+
+    Returns
+    -------
+    pd.DataFrame : columns=['k', 'Recall', 'Precision', 'MRR', 'nDCG']
+    """
+    ...
+
+
+# -- Ground Truth 加载（ground_truth.py） --
+
+class GroundTruthLoader:
+    """
+    Ground truth 加载与格式转换。
+
+    职责：
+    1. 从 MMLongBench 标注数据中提取 (query_id, page_id) 对
+    2. 转为统一的 {query_id: set[page_id]} 格式
+    3. page_id 使用与 PageCorpus 一致的命名规则
     """
 
-    def __init__(
-        self,
-        ground_truth: dict,
-        k_values: list[int] = [1, 3, 5, 10],
-    ) -> None: ...
+    def __init__(self, config: dict): ...
 
-    def evaluate(
-        self,
-        retrieval_results: dict,
-    ) -> pd.DataFrame:
+    def load(self, subset: str | None = None) -> dict[str, set[str]]:
         """
-        计算全部指标。
+        加载 ground truth。
 
         Parameters
         ----------
-        retrieval_results : dict
-            检索结果。格式：
-            {query_id: [(doc_id, page_idx, score), ...], ...}
+        subset : str | None
+            限定子集（docqa/icl/niah/summ/vrag）；None 表示全部。
 
         Returns
         -------
-        pd.DataFrame
-            columns: ['k', 'Recall', 'Precision', 'MRR', 'nDCG']
-            带 avg 汇总行。
+        dict[str, set[str]] : {query_id: {relevant_page_id, ...}}
         """
         ...
 
-    def recall_at_k(
-        self, retrieved: list[str], relevant: set[str], k: int
-    ) -> float: ...
-
-    def precision_at_k(
-        self, retrieved: list[str], relevant: set[str], k: int
-    ) -> float: ...
-
-    def mrr(
-        self, retrieved: list[str], relevant: set[str]
-    ) -> float: ...
-
-    def ndcg_at_k(
-        self, retrieved: list[str], relevant: set[str], k: int
-    ) -> float: ...
+    @staticmethod
+    def build_page_id(subset: str, doc_id: str, page_idx: int) -> str:
+        """构造与 PageCorpus 一致的 page_id。"""
+        ...
 ```
+
+---
+
+### 4.5 设计决策说明
+
+以下说明为 v1 修订中几个关键架构决策的原理，供后续实现和 Phase 4 扩展时参考。
+
+#### 4.5.1 为什么需要稳定 page_id 契约？
+
+| 问题         | 原方案                                                             | 修订后                                                    |
+| ------------ | ------------------------------------------------------------------ | --------------------------------------------------------- |
+| 页面标识方式 | 临时拼接 `{doc_id}_{page_idx}`                                     | `Page.page_id` 为规范格式 `{subset}/{doc_id}/p{page_idx}` |
+| ID 一致性    | Retriever 返回 `doc_id, page_idx`，Evaluator 期望 `page_id` 字符串 | 全链路使用同一 `page_id` 字符串                           |
+| 多子集扩展   | 不同子集的 doc_id 可能冲突                                         | `page_id` 含 subset 前缀，天然隔离                        |
+
+**核心原则**：所有模块间传递的页面标识和查询标识必须使用稳定、可追溯的字符串，禁止在各模块间临时拼接或拆解。
+
+#### 4.5.2 为什么索引采用逐页独立存储？
+
+| 考量                      | 单一巨型张量 (`embeddings.pt`) | 逐页独立文件 (`{page_id}.pt`)           |
+| ------------------------- | ------------------------------ | --------------------------------------- |
+| 增量追加                  | 需重写整份索引                 | 直接写入新文件                          |
+| Patch pruning（Phase 4A） | 各页 patch 数不同时无法 stack  | 天然支持变长                            |
+| 按需加载                  | 必须全量加载或手动切片         | 按 page_id 精确读取                     |
+| 两阶段粗筛（Phase 4B）    | 需额外维护全局均值视图         | `get_mean_pooled_view()` 实时计算或缓存 |
+
+#### 4.5.3 为什么检索要分层而不是单一步骤？
+
+原 `ColPaliRetriever` 将查询编码、全量 MaxSim、Top-k 排序揉在一个类中。分层后：
+
+```
+encode_query → generate_candidates → score_candidates → assemble_results
+```
+
+- **Baseline**：`generate_candidates` 返回全量 page_ids，等价于原行为。
+- **两阶段检索（Phase 4B）**：只需替换 `generate_candidates` 为均值池化粗筛，其余环节复用。
+- **索引压缩（Phase 4A）**：只需在 `score_candidates` 中处理变长 patch 的张量。
+
+#### 4.5.4 模块边界与 Windows 导入约束
+
+为确保 Windows 下 `datasets`（→ pyarrow）与 `torch` 不产生 DLL 冲突，模块在设计上遵循以下边界：
+
+| 层            | 主要依赖                       | 避免顶层导入                                              |
+| ------------- | ------------------------------ | --------------------------------------------------------- |
+| `data/`       | `datasets`, `PIL`, `pypdfium2` | `torch`                                                   |
+| `indexing/`   | `torch`, `PIL`, `transformers` | `datasets`                                                |
+| `retrieval/`  | `torch`, `transformers`        | `datasets`                                                |
+| `evaluation/` | `pandas`（→ pyarrow）, `numpy` | `torch`（指标函数接受 Python list/set，避免 tensor 操作） |
+
+若某模块必须同时使用二者，应在模块顶部**先 `import datasets` / `import pandas`，再 `import torch`**，详见 5.2.1 节。
 
 ---
 
@@ -1135,7 +1442,16 @@ import torch
 import datasets   # ← access violation!
 ```
 
-**约束**：项目中所有会同时用到 `datasets` 和 `torch` 的模块，都必须在文件顶部先 `import datasets`（或 `import pandas`），再 `import torch`。这一约束已体现在 `scripts/check_env.py` 的导入顺序中。
+**模块边界隔离策略**（根本性规避）：
+
+| 层            | 主要依赖                       | 应避免的顶层导入                        |
+| ------------- | ------------------------------ | --------------------------------------- |
+| `data/`       | `datasets`, `PIL`, `pypdfium2` | `torch`                                 |
+| `indexing/`   | `torch`, `PIL`, `transformers` | `datasets`                              |
+| `retrieval/`  | `torch`, `transformers`        | `datasets`                              |
+| `evaluation/` | `pandas`, `numpy`              | `torch`（指标函数使用 Python list/set） |
+
+通过将数据读取层与模型层分属不同模块文件，从物理上规避了在同一文件顶部混合导入的风险。跨层数据传递通过函数参数（dataclass / Python list）完成，而非顶层 import 混合。
 
 ### 5.3 HuggingFace 访问问题
 
@@ -1190,11 +1506,11 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 
 ### Milestone 2：基础管线跑通（5.22）
 
-- [ ] `src/preprocess.py` 可处理全部 PDF
-- [ ] `src/indexer.py` 可构建并持久化索引
-- [ ] `src/retriever.py` 可对单条查询返回 Top-k
-- [ ] `src/evaluator.py` 可计算 4 项指标
-- [ ] 端到端管线在 10 条查询子集上输出合理结果
+- [ ] `src/zeroshot_vdr/data/`：DocumentQA 适配器 + 语料构建可用
+- [ ] `src/zeroshot_vdr/indexing/`：可离线构建 & 加载索引（逐页独立存储）
+- [ ] `src/zeroshot_vdr/retrieval/`：流水线式检索，查询→Top-k 结果端到端
+- [ ] `src/zeroshot_vdr/evaluation/`：四项指标计算可用，与数据集解耦
+- [ ] 端到端管线在 DocumentQA 10 条查询子集上输出合理结果
 
 ### Milestone 3：基础评测完成 + Milestone 报告（5.28）
 
