@@ -14,7 +14,8 @@
   │ ├── core_module_revision_v1.md
   │ ├── core_module_revision_v2.md
   │ ├── core_module_revision_v3.md
-  │ └── core_module_revision_v4.md
+  │ ├── core_module_revision_v4.md
+  │ └── core_module_revision_v5.md
 - [二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）](#二环境配置指导win10-原生--rtx-4060-laptop--conda--uv)
   - [2.1 概览：分层管理](#21-概览分层管理)
   - [2.2 NVIDIA 驱动与 CUDA](#22-nvidia-驱动与-cuda)
@@ -74,7 +75,7 @@ ZeroShotVDR/
 │           │   ├── {page_id}.pt
 │           │   └── ...
 │           ├── index_meta.json    # 索引元信息：模型名称、维度、时间戳、页数
-│           └── page_ids.json      # embedding<->页面 映射表（稳定 ID 契约）
+│           └── page_ids.json      # 有序 JSON 数组 [page_id, ...]（稳定 ID 契约）
 │
 ├── src/zeroshot_vdr/              # 核心包（editable install）
 │   ├── __init__.py
@@ -126,7 +127,11 @@ ZeroShotVDR/
 │   ├── Proposal_VDR.md            # 开题报告
 │   ├── Project_Plan.md            # 本文件：项目计划
 │   └── revision/                  # 修订记录
-│       └── core_module_revision_v1.md
+│       ├── core_module_revision_v1.md
+│       ├── core_module_revision_v2.md
+│       ├── core_module_revision_v3.md
+│       ├── core_module_revision_v4.md
+│       └── core_module_revision_v5.md
 │
 ├── pyproject.toml                 # uv 原生项目配置
 ├── uv.lock                        # 依赖锁定文件
@@ -715,35 +720,52 @@ class PageCorpus:
 
 **文件**：`src/zeroshot_vdr/indexing/encoder.py`, `src/zeroshot_vdr/indexing/store.py`
 
-| 子步骤 | 内容                                                                                                                                                                |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.2.1  | 加载 ColPali-v1.3 模型（`colpali_engine.models.ColPali`）                                                                                                           |
-| 2.2.2  | 实现 `PageEncoder`：逐页编码图像 → patch embeddings `[n_patches, dim]`                                                                                              |
-| 2.2.3  | 处理显存友好的 batching：每次加载 N 张图像（建议 batch_size=2~4 for 8GB VRAM）                                                                                      |
-| 2.2.4  | **索引存储**：每页独立存储为 `{page_id}.pt`（shape `[n_patches, dim]`），而非单一巨型张量。此设计支持：（a）真增量追加，（b）后续 patch pruning 后各页 patch 数不同 |
-| 2.2.5  | `IndexStore` 类统一管理索引的构建、加载、增量更新，产出 `page_ids.json`（page_id → 文件路径映射）和 `index_meta.json`                                               |
-| 2.2.6  | 记录索引构建耗时与存储大小；支持断点续建                                                                                                                            |
+| 子步骤 | 内容                                                                                                                                                                                                                                |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.2.1  | 加载 ColPali-v1.3 模型（`colpali_engine.models.ColPali`）                                                                                                                                                                           |
+| 2.2.2  | 实现 `PageEncoder`：逐页编码图像 → patch embeddings `[n_patches, dim]`                                                                                                                                                              |
+| 2.2.3  | 处理显存友好的 batching：每次加载 N 张图像（建议 batch_size=2~4 for 8GB VRAM）                                                                                                                                                      |
+| 2.2.4  | **索引存储**：每页独立存储为 `{safe_page_id}.pt`（shape `[n_patches, dim]`，其中 `safe_page_id` 由 `page_id` 中的 `/` 替换为 `_` 得到），而非单一巨型张量。此设计支持：（a）真增量追加，（b）后续 patch pruning 后各页 patch 数不同 |
+| 2.2.5  | `IndexStore` 类统一管理索引的构建、加载、增量更新，产出 `page_ids.json`（有序 JSON 数组 `[page_id, ...]`，记录全局页面顺序）和 `index_meta.json`（由 `save_meta()` 显式写入）                                                       |
+| 2.2.6  | 记录索引构建耗时与存储大小；支持断点续建（`encode_corpus(resume=True)` 默认跳过已索引页面，重复调用安全且幂等）                                                                                                                     |
 
 **预期 API**：
 
 ```python
 # src/zeroshot_vdr/indexing/encoder.py
 class PageEncoder:
-    def __init__(self, model, batch_size: int = 4, dtype=torch.float16): ...
+    """PageEncoder 的生产构造入口为 from_pretrained()，直接构造主要用于测试。"""
+    def __init__(self, model, processor,
+                 batch_size: int = 4,
+                 dtype: torch.dtype | None = None,   # None=不转换模型精度
+                 device: str = "cuda:0",
+                 storage_dtype: torch.dtype = torch.float16): ...
+    @classmethod
+    def from_pretrained(cls, model_repo="vidore/colpali-v1.3",
+                        base_repo="vidore/colpaligemma-3b-pt-448-base",
+                        device="cuda:0", dtype=None, batch_size=4,
+                        storage_dtype=torch.float16) -> "PageEncoder": ...
     def encode_batch(self, images: list[Image.Image]) -> torch.Tensor: ...
-    def encode_corpus(self, pages: list[Page], store: "IndexStore") -> None: ...
+    def encode_corpus(self, pages: list[Page], store: "IndexStore",
+                      show_progress: bool = True,
+                      resume: bool = True) -> None: ...  # resume=True 支持断点续建
 
 # src/zeroshot_vdr/indexing/store.py
 class IndexStore:
     def __init__(self, index_dir: str): ...
     # 核心接口
     def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
+    def write_batch(self, page_ids: list[str], embeddings: torch.Tensor) -> None: ...
     def read_page(self, page_id: str) -> torch.Tensor: ...
     def iter_pages(self, page_ids: list[str] | None = None): ...
     def list_page_ids(self, doc_id: str | None = None) -> list[str]: ...
-    def get_mean_pooled_view(self, page_ids: list[str] | None = None): ...
+    def get_mean_pooled_view(self, page_ids: list[str] | None = None
+                             ) -> tuple[torch.Tensor, list[str]]: ...
     # 便利函数（仅 patch 数一致时可用）
     def read_stacked(self, page_ids: list[str]) -> tuple[torch.Tensor, list[str]]: ...
+    # 元信息（需显式调用；write_page 不会自动创建 index_meta.json）
+    def save_meta(self, model_name: str, dim: int) -> None: ...
+    def load_meta(self) -> dict: ...
     @property
     def stats(self) -> dict: ...
 ```
@@ -965,12 +987,13 @@ class GroundTruthLoader:
 
 ## 四、核心模块接口设计
 
-> **修订汇总说明**：本章综合吸收 `docs/revision/core_module_revision_v1.md` 至 `docs/revision/core_module_revision_v4.md` 的逐轮修订结果。
+> **修订汇总说明**：本章综合吸收 `docs/revision/core_module_revision_v1.md` 至 `docs/revision/core_module_revision_v5.md` 的逐轮修订结果。
 > 核心变化：（1）预处理层从"PDF 渲染"转向"语料构建 + 数据适配"；
 > （2）索引存储从单一巨型张量改为每页独立文件，支持变长 patch 数；
 > （3）检索层从单一 Retriever 类改为分环节流水线；
 > （4）评测层将指标计算与数据集适配解耦；
-> （5）新增显式的数据契约层，统一页面/查询/结果标识体系。
+> （5）新增显式的数据契约层，统一页面/查询/结果标识体系；
+> （6）根据 Step 2.2 实际实现同步更新索引层接口（PageEncoder processor 参数、from_pretrained 工厂方法、encode_corpus resume 参数、page_ids.json 数组格式、save_meta 显式触发、get_mean_pooled_view 返回 tuple、write_batch 接口）。
 
 ---
 
@@ -1183,6 +1206,15 @@ class PageCorpus:
 
 ### 4.2 索引层（`indexing/`）
 
+> **v5 修订说明**：本节已根据 Step 2.2 的实际实现代码（`IndexStore` / `PageEncoder`）
+> 同步更新。主要变更：（1）PageEncoder 构造函数新增必填 `processor` 参数、独立
+> `storage_dtype` 落盘精度、`from_pretrained()` 工厂方法；
+> （2）`encode_corpus()` 新增 `resume` 断点续建参数；
+> （3）`page_ids.json` 格式确认为有序 JSON 数组而非映射字典；
+> （4）`index_meta.json` 由显式 `save_meta()` 创建，非隐式触发；
+> （5）新增 `write_batch`、`save_meta`、`load_meta` 接口；
+> （6）批量读取接口返回类型统一为 `tuple[Tensor, list[str]]`。
+
 **设计原则**：
 
 1. 编码（encoder）与存储（store）在抽象上分离，便于后续替换编码器或存储后端。
@@ -1205,17 +1237,48 @@ class PageEncoder:
     """
     ColPali 页面编码器。
 
+    processor 与 model 分离是有意设计，便于独立替换和测试。
+    生产场景下推荐使用 from_pretrained() 工厂方法构造，
+    内部封装了 sitecustomize 补丁验证和模型/处理器的加载。
+
     Parameters
     ----------
     model : ColPali
+        ColPali 模型实例
+    processor : ColPaliProcessor
+        ColPali 图像处理器（与 model 匹配）
     batch_size : int
-    dtype : torch.dtype
+        GPU 编码批次大小（适配 8GB 显存建议 2~4）
+    dtype : torch.dtype | None
+        推理精度；None 表示不额外转换模型精度
     device : str
+        推理设备
+    storage_dtype : torch.dtype
+        落盘精度（float16 约节省 50% 存储），独立于推理 dtype
     """
 
-    def __init__(self, model, batch_size: int = 4,
-                 dtype: torch.dtype = torch.float16,
-                 device: str = "cuda:0"): ...
+    def __init__(self, model, processor,
+                 batch_size: int = 4,
+                 dtype: torch.dtype | None = None,
+                 device: str = "cuda:0",
+                 storage_dtype: torch.dtype = torch.float16): ...
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_repo: str = "vidore/colpali-v1.3",
+        base_repo: str = "vidore/colpaligemma-3b-pt-448-base",
+        device: str = "cuda:0",
+        dtype: torch.dtype | None = None,
+        batch_size: int = 4,
+        storage_dtype: torch.dtype = torch.float16,
+    ) -> "PageEncoder":
+        """
+        生产场景下的推荐构造入口。
+        内部封装 sitecustomize 补丁验证和模型/处理器的加载。
+        直接构造 PageEncoder(model, processor, ...) 主要用于测试和离线场景。
+        """
+        ...
 
     def encode_single(self, image: Image.Image) -> torch.Tensor:
         """编码单张页面图像 → [n_patches, dim]"""
@@ -1227,8 +1290,14 @@ class PageEncoder:
 
     def encode_corpus(self, pages: list[Page],
                       store: "IndexStore",
-                      show_progress: bool = True) -> None:
-        """遍历页面语料，逐批编码并写入索引存储。"""
+                      show_progress: bool = True,
+                      resume: bool = True) -> None:
+        """
+        遍历页面语料，逐批编码并写入索引存储。
+
+        resume=True 为默认行为，跳过 store 中已存在的 page_id，
+        支持断点续建。重复调用 encode_corpus 是安全的，不会重复写入。
+        """
         ...
 
 
@@ -1239,22 +1308,32 @@ class IndexStore:
     存储布局：
         {index_dir}/
         ├── pages/
-        │   ├── {page_id}.pt    # torch.Tensor [n_patches, dim]
-        │   └── ...
-        ├── page_ids.json       # [page_id, ...] 有序列表
-        └── index_meta.json     # 模型名、维度、时间戳、总页数
+        │   └── {safe_page_id}.pt    # safe_page_id = page_id 中 '/' 替换为 '_'
+        ├── page_ids.json             # 有序 JSON 数组 [page_id, ...]，记录全局页面顺序
+        └── index_meta.json           # 模型名、维度、时间戳、页数（由 save_meta() 显式创建）
 
     IndexStore 的稳定读取语义为按页读取与按页面列表迭代读取。
     任何需要返回全量 stacked tensor 的接口均视为 baseline 便利函数，
     而非变长 patch 场景下的通用接口。
+
+    批量读取接口（read_stacked、get_mean_pooled_view）统一返回
+    ``tuple[Tensor, list[str]]``，保证张量行与页面 ID 顺序可追溯。
     """
 
     def __init__(self, index_dir: str): ...
 
     # -- 核心接口：写入 --
-    def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
+    def write_page(self, page_id: str, embedding: torch.Tensor) -> None:
+        """写入单页 embedding → pages/{safe_page_id}.pt。"""
+        ...
+
     def write_batch(self, page_ids: list[str],
-                    embeddings: torch.Tensor) -> None: ...
+                    embeddings: torch.Tensor) -> None:
+        """
+        批量写入 [batch, n_patches, dim] 的 embeddings，
+        等价于逐页调用 write_page()。encode_corpus() 内部使用此路径。
+        """
+        ...
 
     # -- 核心接口：读取 --
     def read_page(self, page_id: str) -> torch.Tensor:
@@ -1288,22 +1367,41 @@ class IndexStore:
     # -- 稳定视图接口 --
     def get_mean_pooled_view(self, page_ids: list[str] | None = None
                              ) -> tuple[torch.Tensor, list[str]]:
-        """返回页面的均值池化向量 [n_pages, dim]，供两阶段粗筛使用。"""
+        """
+        返回 (pooled_tensor [n_pages, dim], page_ids)。
+        pooled_tensor[i] 是 page_ids[i] 对应页面的 patch embeddings 的均值向量。
+        """
         ...
 
     # -- baseline 便利函数（非核心抽象，变长 patch 场景不可用） --
     def read_stacked(self, page_ids: list[str]) -> tuple[torch.Tensor, list[str]]:
-        """返回 (stacked_tensor, page_id_list)。
+        """返回 (stacked_tensor [n_pages, n_patches, dim], page_id_list)。
 
         仅在所有页面 patch 数一致时使用的便利函数。
         变长 patch 场景请使用 iter_pages()。
         """
         ...
 
-    # -- 元信息 --
+    # -- 元信息（显式写入，非自动触发） --
+    def save_meta(self, model_name: str, dim: int) -> None:
+        """保存索引元信息到 index_meta.json。
+
+        .. note::
+           write_page() 不会自动创建 index_meta.json。
+           完整的编码流程应以 store.save_meta(model_name, dim) 收尾。
+        """
+        ...
+
+    def load_meta(self) -> dict:
+        """加载索引元信息；若 index_meta.json 不存在则返回默认值。"""
+        ...
+
     @property
     def stats(self) -> dict:
-        """{num_pages, dim, total_size_mb, build_time_sec, ...}"""
+        """
+        返回 {num_pages, dim, total_size_mb, storage_dir, created_at}。
+        num_pages 来自实时加载 page_ids.json，不依赖 index_meta.json 快照。
+        """
         ...
 ```
 

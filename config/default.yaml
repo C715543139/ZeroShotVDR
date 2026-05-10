@@ -1,4 +1,47 @@
+# ===== 数据配置 =====
+data:
+  root_dir: "data/MMLongBench/raw"
+  subsets: ["docqa"]                          # Phase 2 主评测集
+  subtasks: ["longdocurl", "mmlongdoc", "slidevqa"]  # DocumentQA 三子任务
+  length: null                                 # null=全部档位，可指定如 "K32"
+  page_id_template: "{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}"
+  query_id_template: "{task_family}/{subtask}_{length}/q{query_index:0>3d}"
+
+# ===== 预处理/渲染配置 =====
 rendering:
-  backend: pypdfium2 # 固定使用 pypdfium2
-  scale: 2.0 # 渲染缩放因子
-  target_size: [672, 672] # 送入 ColPali 前 resize 到的目标尺寸
+  backend: pypdfium2                          # 固定使用 pypdfium2
+  scale: 2.0                                  # 渲染缩放因子
+  target_size: [672, 672]                     # 送入 ColPali 前 resize 到的目标尺寸
+
+# ===== 模型配置 =====
+model:
+  repo: "vidore/colpali-v1.3"
+  base_repo: "vidore/colpaligemma-3b-pt-448-base"
+  device: "cuda:0"
+  dtype: "bfloat16"
+
+# ===== 索引配置 =====
+index:
+  dir: "data/processed/index"
+  batch_size: 4                               # 编码时 GPU batch size（适配 8GB 显存）
+  storage_dtype: "float16"                    # 落盘精度
+  per_page_files: true                        # 每页独立存储（固定为 true）
+
+# ===== 检索配置 =====
+retrieval:
+  top_k_values: [1, 3, 5, 10]
+  score_batch_size: 64                        # MaxSim 时每批处理页面数
+  candidate_strategy: "full"                  # baseline=full; Phase 4 可切换
+
+# ===== 评测配置 =====
+evaluation:
+  k_values: [1, 3, 5, 10]
+  output_dir: "outputs/eval_reports"
+
+# ===== 路径配置 =====
+paths:
+  hf_home: ".cache/huggingface"
+  hf_hub_cache: ".cache/huggingface/hub"
+  hf_datasets_cache: ".cache/huggingface/datasets"
+  image_output: "data/processed/images"
+  corpus_meta: "data/processed/corpus_meta.json"
