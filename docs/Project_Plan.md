@@ -11,6 +11,7 @@
 ## 目录
 
 - [一、推荐项目结构](#一推荐项目结构)
+  - [1.1 命名分层与概念体系](#11-命名分层与概念体系)
 - [二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）](#二环境配置指导win10-原生--rtx-4060-laptop--conda--uv)
   - [2.1 概览：分层管理](#21-概览分层管理)
   - [2.2 NVIDIA 驱动与 CUDA](#22-nvidia-驱动与-cuda)
@@ -155,6 +156,40 @@ models/
 Thumbs.db
 Desktop.ini
 ```
+
+---
+
+### 1.1 命名分层与概念体系
+
+> **v2 修订说明**：为避免全文中 `DocumentQA` / `documentQA` / `docqa` 等命名混用，
+> 以及任务类别、子任务、长度档位、文档标识、页面标识之间概念不清的问题，
+> 本节建立一套统一的命名分层体系。全文所有模块、配置、脚本、结果文件均遵循此体系。
+
+MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到细：
+
+| 层级        | 英文名        | 说明                     | 本项目中的值（Phase 2）                                    |
+| ----------- | ------------- | ------------------------ | ---------------------------------------------------------- |
+| L1 任务族   | `task_family` | MMLongBench 中的大类任务 | `docqa`, `icl`, `niah`, `summ`, `vrag`                     |
+| L2 子任务   | `subtask`     | 任务族下的具体数据集变体 | `longdocurl`, `mmlongdoc`, `slidevqa`, `text_mmlongdoc` 等 |
+| L3 长度档位 | `length`      | 上下文长度 K 值          | `K4`, `K8`, `K16`, `K32`, `K64`, `K128`                    |
+| L4 文档     | `doc_id`      | 单个文档的唯一标识       | JSONL/JSON 中的 `doc_id` 字段                              |
+| L5 页面     | `page_idx`    | 文档内的页码（0-based）  | 整数，从 0 开始                                            |
+
+**全文统一命名规则：**
+
+- 在代码、配置、文件名中，涉及任务族的标识符**一律使用小写短名**：`docqa`（而非 `DocumentQA` 或 `documentQA`）
+- 子任务名保留原始命名中的小写形式：`longdocurl`, `mmlongdoc`, `slidevqa` 等
+- 长度档位统一写为 `K{数字}` 格式：`K4`, `K8`, ..., `K128`
+- `page_id` 的稳定格式为：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`
+  - 例：`docqa/longdocurl_K4/abc123/p0`
+- `query_id` 的稳定格式为：`{task_family}/{subtask}_{length}/{query_index}`
+  - 例：`docqa/longdocurl_K4/q001`
+
+**命名分层对后续设计的意义：**
+
+1. 配置中的 `subsets` 字段使用 L1 任务族名（如 `["docqa"]`），长度档位和子任务过滤通过额外参数控制
+2. page_id 自带层级前缀，天然隔离不同任务族/子任务/档位之间的命名冲突
+3. 评测结果可按 `task_family` / `subtask` / `length` 任一粒度分组汇总，无需事后解析 ID 字符串
 
 ---
 
@@ -368,7 +403,7 @@ pil_image = bitmap.to_pil()      # 转为 PIL Image（可直接送入 ColPali）
 data:
   root_dir: "data/MMLongBench/raw"
   subsets: ["docqa"] # Phase 2 主评测集，后续可扩展
-  page_id_template: "{subset}/{doc_id}/p{page_idx}"
+  page_id_template: "{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}"
 
 # ===== 预处理/渲染配置 =====
 rendering:
@@ -478,17 +513,17 @@ MMLongBench 官方 README 推荐的是下载各个 `tar.gz` 文件并在本地�
 
 建议分两步进行：
 
-1. 先做 smoke test，只下载元数据包与一个任务子集。
+1. 先做 smoke test，只下载元数据包与 DocumentQA 图像包。
 2. 管线跑通后，再补齐全量图像包。
 
 ```powershell
-# 第一步：只下载最小可验证集合
+# 第一步：只下载最小可验证集合（聚焦 Phase 2 主评测集 DocumentQA）
 uv run hf download ZhaoweiWang/MMLongBench 0_mmlb_data.tar.gz --local-dir data/MMLongBench/raw --repo-type dataset
-uv run hf download ZhaoweiWang/MMLongBench 1_vrag_image.tar.gz --local-dir data/MMLongBench/raw --repo-type dataset
+uv run hf download ZhaoweiWang/MMLongBench 5_docqa_image.tar.gz --local-dir data/MMLongBench/raw --repo-type dataset
 
 # 解压到项目内
 tar -xzf data/MMLongBench/raw/0_mmlb_data.tar.gz -C data/MMLongBench/raw
-tar -xzf data/MMLongBench/raw/1_vrag_image.tar.gz -C data/MMLongBench/raw
+tar -xzf data/MMLongBench/raw/5_docqa_image.tar.gz -C data/MMLongBench/raw
 ```
 
 全量下载时，再补齐其余任务包：
@@ -580,9 +615,11 @@ data/MMLongBench/
 - [ ] 安装 uv，完成 `uv sync`（依赖安装并创建 `.venv`）
 - [ ] 进入项目时按顺序执行 `conda activate zeroshotvdr` 和 `.\.venv\Scripts\Activate.ps1`
 - [ ] 将 ColPali base + adapter 下载到项目内 `.cache/huggingface/`
-- [ ] 将 MMLongBench 的 `0_mmlb_data.tar.gz` 和一个任务图像包下载到 `data/MMLongBench/raw/`
+- [ ] **明确下载 DocumentQA 所需资源**：`0_mmlb_data.tar.gz`（元数据）+ `5_docqa_image.tar.gz`（DocumentQA 页面图像），解压到 `data/MMLongBench/raw/`
 - [ ] 验证项目内模型缓存与数据目录可读取
 - [ ] 运行 `python scripts/check_env.py`，全部项通过
+
+> **v2 对齐说明**：Phase 2 的主闭环依赖 DocumentQA 子集，因此 Phase 1 的前置资源准备明确围绕 DocumentQA 展开（下载 `5_docqa_image.tar.gz` 而非泛化的"一个任务图像包"）。其余任务族（icl/niah/summ/vrag）的图像包可在 Phase 2 管线跑通后按需补充下载。
 
 #### Step 1.3 数据集探索
 
@@ -595,7 +632,8 @@ data/MMLongBench/
 #### Phase 1 产出
 
 - [ ] 可运行环境（验证脚本全 PASS）
-- [ ] 数据集统计笔记（记录在实验报告中）
+- [ ] DocumentQA 数据集统计笔记：各子任务（longdocurl/mmlongdoc/slidevqa）× 各档位（K4-K128）的文档数、页面数、查询数
+- [ ] 确认 `0_mmlb_data.tar.gz` 和 `5_docqa_image.tar.gz` 已解压至项目内，数据路径可正常读取
 
 ---
 
@@ -616,12 +654,12 @@ data/MMLongBench/
 
 **文件**：`src/zeroshot_vdr/data/corpus.py`, `src/zeroshot_vdr/data/adapters.py`, `src/zeroshot_vdr/contracts.py`
 
-| 子步骤 | 内容                                                                                                                                                         |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, page_idx, image_path）、`Query`（query_id, text）、`RelevanceJudgment`（query_id, page_id, relevance） |
-| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约             |
-| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{subset}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                       |
-| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                       |
+| 子步骤 | 内容                                                                                                                                                           |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, page_idx, image_path）、`Query`（query_id, text）、`RelevanceJudgment`（query_id, page_id, relevance）   |
+| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约               |
+| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json` |
+| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                         |
 
 **预期 API**：
 
@@ -629,7 +667,7 @@ data/MMLongBench/
 # src/zeroshot_vdr/contracts.py
 @dataclass
 class Page:
-    page_id: str       # 稳定唯一标识，如 "docqa/longdocurl_K4/p3"
+    page_id: str       # 稳定唯一标识，如 "docqa/longdocurl_K4/abc123/p0"
     doc_id: str
     page_idx: int
     image_path: str
@@ -779,10 +817,15 @@ class GroundTruthLoader:
 
 **目标**：完成基础系统的全面评测，分析瓶颈与失败案例。
 
+> **评测协议**（详见 4.5.5）：Baseline 采用**文档内页级检索**（per-document ranking），
+> 即每个查询仅在所属文档的页面集合内排序。DocumentQA 三个子任务分别评测汇报，
+> 以 K32 为主长度档位，同时对比所有档位的趋势。
+
 #### Step 3.1 全量评测
 
-- [ ] 在 MMLongBench 测试集上运行完整检索
-- [ ] 输出 k=1,3,5,10 下的 Recall, Precision, MRR, nDCG
+- [ ] 在 DocumentQA 三个子任务（longdocurl/mmlongdoc/slidevqa）× 所有长度档位（K4-K128）上运行文档内检索
+- [ ] 输出 k=1,3,5,10 下的 Recall, Precision, MRR, nDCG（分子任务、分档位）
+- [ ] 以 K32 为主档位汇报汇总表，同时提供跨档位趋势图
 - [ ] 记录效率指标：索引构建时间、索引文件大小、单次检索延迟
 
 #### Step 3.2 结果分析
@@ -798,7 +841,7 @@ class GroundTruthLoader:
 
 #### Phase 3 产出
 
-- [ ] `outputs/eval_reports/metrics_summary.csv`
+- [ ] `outputs/eval_reports/metrics_summary.csv`（含子任务×档位的完整结果）
 - [ ] Bad Cases 分析笔记
 - [ ] Milestone 报告草稿
 
@@ -910,7 +953,7 @@ from typing import Optional
 @dataclass
 class Page:
     """页面语料中的单页。"""
-    page_id: str           # 稳定唯一标识，格式: {subset}/{doc_id}/p{page_idx}
+    page_id: str           # 稳定唯一标识，格式: {task_family}/{subtask}_{length}/{doc_id}/p{page_idx}
     doc_id: str            # 所属文档标识
     page_idx: int          # 文档内页码（0-based）
     image_path: str        # 页面图像文件路径
@@ -972,7 +1015,7 @@ class DocumentQAAdapter(BaseAdapter):
     MMLongBench DocumentQA 子集适配器。
 
     输入：mmlb_data/documentQA/ 下的 JSONL 文件（含 page_list + ans_page_list）。
-    输出：Page（page_id = "docqa/{filename}/{doc_id}/p{idx}"）、
+    输出：Page（page_id = "docqa/{subtask}_{length}/{doc_id}/p{idx}"）、
           Query、RelevanceJudgment。
     """
 
@@ -1348,13 +1391,26 @@ class GroundTruthLoader:
 
 #### 4.5.1 为什么需要稳定 page_id 契约？
 
-| 问题         | 原方案                                                             | 修订后                                                    |
-| ------------ | ------------------------------------------------------------------ | --------------------------------------------------------- |
-| 页面标识方式 | 临时拼接 `{doc_id}_{page_idx}`                                     | `Page.page_id` 为规范格式 `{subset}/{doc_id}/p{page_idx}` |
-| ID 一致性    | Retriever 返回 `doc_id, page_idx`，Evaluator 期望 `page_id` 字符串 | 全链路使用同一 `page_id` 字符串                           |
-| 多子集扩展   | 不同子集的 doc_id 可能冲突                                         | `page_id` 含 subset 前缀，天然隔离                        |
+| 问题         | 原方案                                                             | 修订后                                                                            |
+| ------------ | ------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| 页面标识方式 | 临时拼接 `{doc_id}_{page_idx}`                                     | `Page.page_id` 为规范格式 `{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}` |
+| ID 一致性    | Retriever 返回 `doc_id, page_idx`，Evaluator 期望 `page_id` 字符串 | 全链路使用同一 `page_id` 字符串                                                   |
+| 多子集扩展   | 不同子集的 doc_id 可能冲突                                         | `page_id` 含 task_family + subtask + length 前缀，天然隔离                        |
 
 **核心原则**：所有模块间传递的页面标识和查询标识必须使用稳定、可追溯的字符串，禁止在各模块间临时拼接或拆解。
+
+**ID 契约的适用边界**（v2 补充）：
+
+上述 page_id 格式的设计意图不限于当前 DocumentQA baseline，而是覆盖以下场景：
+
+| 场景                                                     | page_id 是否仍然成立 | 说明                                                              |
+| -------------------------------------------------------- | -------------------- | ----------------------------------------------------------------- |
+| 不同长度档位（K4/K8/.../K128）                           | ✅ 成立              | 长度包含在 page_id 中，同一文档的不同档位版本天然区分             |
+| DocumentQA 内不同子任务（longdocurl/mmlongdoc/slidevqa） | ✅ 成立              | subtask 字段隔离，避免同名 doc_id 冲突                            |
+| 扩展到其他任务族（icl/niah/summ/vrag）                   | ✅ 成立              | task_family 字段隔离，且各任务族的数据结构差异由对应 Adapter 封装 |
+| 未来加入 PDF 渲染的额外文档                              | ✅ 成立              | 可使用专用 task_family（如 `pdf`）或归入现有族                    |
+
+**query_id 采用相同的层级前缀规则**（`{task_family}/{subtask}_{length}/{query_index}`），确保即使不同子任务中出现相同的查询序号也不会冲突。
 
 #### 4.5.2 为什么索引采用逐页独立存储？
 
@@ -1389,6 +1445,84 @@ encode_query → generate_candidates → score_candidates → assemble_results
 | `evaluation/` | `pandas`（→ pyarrow）, `numpy` | `torch`（指标函数接受 Python list/set，避免 tensor 操作） |
 
 若某模块必须同时使用二者，应在模块顶部**先 `import datasets` / `import pandas`，再 `import torch`**，详见 5.2.1 节。
+
+#### 4.5.5 评测协议：检索范围与结果汇报（v2 新增）
+
+DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集合"，这引出一个关键设计决定：检索的候选范围。
+
+**Baseline 检索范围**：
+
+| 选项                          | 描述                               | 本项目选择                |
+| ----------------------------- | ---------------------------------- | ------------------------- |
+| 文档内检索（per-document）    | 每个查询仅在对应文档的页面内排序   | ✅ **Baseline 采用**      |
+| 全局语料检索（global corpus） | 所有文档的所有页面混合为一个语料库 | 留作 Phase 4 可选扩展对比 |
+
+选择文档内检索的理由：
+
+1. DocumentQA 的 ground truth（`ans_page_list`）天然标注的是同一文档内的相关页面。
+2. 跨文档检索会引入额外的文档级区分问题，而 DocumentQA 本身不提供跨文档的相关性标注。
+3. 在文档内评测能更纯粹地反映页面级视觉匹配能力。
+
+**结果汇报粒度**：
+
+| 维度                                        | 汇报方式                                                    |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| 子任务（longdocurl / mmlongdoc / slidevqa） | **分别汇报**各项指标，同时提供加权平均                      |
+| 长度档位（K4/K8/K16/K32/K64/K128）          | 以 **K32 为主档位**（平衡规模与代表性），同时做跨档位趋势图 |
+| 汇总                                        | 在报告主表中展示 docqa 三个子任务×K32 的完整结果            |
+
+**注**：K32 被选为主档位的原因：它在长度档位中处于中间位置，页面数适中（不会太少导致指标方差大，也不会太多导致索引构建时间过长），且 MMLongBench 论文中常以中间档位作为主要对比点。
+
+#### 4.5.6 索引存储策略的阶段性权衡（v2 新增）
+
+逐页独立存储方案在为增量追加和变长 patch 提供便利的同时，存在以下需要留意的权衡：
+
+| 考量             | 说明                                                                             | 缓解措施                                                     |
+| ---------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 小文件 I/O 开销  | DocumentQA K4/K8 档位页面数较少（~数十页），影响可忽略；K128 可能达数千页        | 批量读取时使用 `torch.load` 的并行加载；必要时可缓存合并视图 |
+| Windows 文件系统 | NTFS 对数千个小文件的目录枚举有性能成本，但远未到需要特殊处理的量级（<10K 文件） | `page_ids.json` 维护有序列表，避免频繁 `os.listdir`          |
+| 跨平台迁移       | 逐页文件便于 rsync/robocopy 增量同步，反而优于巨型单文件                         | 无额外风险                                                   |
+| 未来更大规模     | 若页面数超 50K（超出当前 MMLongBench 总规模），可转为分片存储（shard）           | 当前阶段不需要                                               |
+
+**结论**：逐页独立存储是当前阶段（Phase 2-4）的优先策略。若后续实验显示 I/O 成为瓶颈（预期不会，因为 GPU 推理远慢于磁盘读取），可引入可选的 shard 合并模式，不影响现有接口。
+
+#### 4.5.7 核心抽象与便利实现的区分（v2 新增）
+
+当前设计中，部分接口描述偏向 baseline 便利性，部分则是必须长期成立的设计不变量。为降低 Phase 4 扩展时的理解成本，以下对此进行明确区分：
+
+**必须长期成立的核心抽象**（Phase 4 不应破坏）：
+
+| 抽象                                                     | 理由                                             |
+| -------------------------------------------------------- | ------------------------------------------------ |
+| `Page` / `Query` / `RetrievalResult` 的 dataclass 契约   | 跨模块数据交换的"语言"，修改会影响全链路         |
+| `BaseAdapter` → `PageCorpus` 的语料构建流程              | 新增数据源只需增加 Adapter，不应改动 Corpus 逻辑 |
+| `IndexStore.write_page / read_page` 的按页读写语义       | 索引的原子操作接口，上层逻辑依赖其稳定性         |
+| `RetrievalPipeline` 的四阶段流水线结构                   | Phase 4 通过替换阶段策略扩展，流水线本身不变     |
+| 指标函数的纯函数签名 `(retrieved, relevant, k) -> float` | 与数据集解耦的评测基础                           |
+
+**当前为 baseline 提供的便利实现**（Phase 4 可替换或增强）：
+
+| 便利实现                                                    | Phase 4 的可能变化                                          |
+| ----------------------------------------------------------- | ----------------------------------------------------------- |
+| `IndexStore.read_all()` 返回全量 stacked tensor             | 变长 patch 时不可用，需改为逐页循环；不影响核心抽象         |
+| `RetrievalPipeline.generate_candidates()` 默认返回全量      | Phase 4B 替换为均值池化粗筛                                 |
+| `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | Phase 4A 后各页 patch 数可能不同，需改为逐页或 padding 策略 |
+| `GroundTruthLoader.load()` 默认加载全量                     | 可通过 `subset` 参数限定，不影响接口                        |
+
+这一区分的关键作用：当 Phase 4 需要改动某处时，可以先判断该处属于"核心抽象"还是"便利实现"，避免在核心抽象上做破坏性修改。
+
+#### 4.5.8 配置层语义分层（v2 新增）
+
+当前 `config/default.yaml` 中的配置项混合了不同语义层面的信息。为提高实验复现和切换的便利性，建议在实现时按以下层次组织配置：
+
+| 配置层           | 语义                                     | 变更频率         | 示例                                               |
+| ---------------- | ---------------------------------------- | ---------------- | -------------------------------------------------- |
+| **项目级常量**   | 不随实验变化的固定信息                   | 几乎不变         | HF 缓存路径、模型 repo 名、page_id 模板            |
+| **环境复现参数** | 保证他人可复现运行的关键设置             | 极少变化         | device、dtype、target_size                         |
+| **实验切换参数** | 不同实验间需要对比的变量                 | 频繁变化         | subsets、length 档位、top_k 值、candidate_strategy |
+| **策略选择参数** | 当前阶段的设计选择，后续可能成为实验变量 | Phase 切换时变化 | per_page_files、score_batch_size                   |
+
+**建议实践**：在 `config.py` 中为上述四层分别提供加载函数，使得运行脚本可以通过命令行参数或环境变量覆盖"实验切换参数"和"策略选择参数"，而无需修改 YAML 文件本身。项目级常量和环境复现参数应保持稳定。
 
 ---
 
@@ -1502,7 +1636,7 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 - [ ] `uv sync` 无报错完成
 - [ ] `python scripts/check_env.py` 全部 PASS
 - [ ] ColPali-v1.3 权重下载至本地
-- [ ] MMLongBench 数据集可读取，统计信息已记录
+- [ ] DocumentQA 数据（`0_mmlb_data.tar.gz` + `5_docqa_image.tar.gz`）已下载解压，统计信息已记录
 
 ### Milestone 2：基础管线跑通（5.22）
 
@@ -1514,7 +1648,8 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 
 ### Milestone 3：基础评测完成 + Milestone 报告（5.28）
 
-- [ ] 全量测试集评测结果（4 指标 x 4 k 值）
+- [ ] DocumentQA 三子任务 × K32 主档位全量评测结果（4 指标 x 4 k 值）
+- [ ] 跨档位趋势图（K4-K128）和跨子任务对比分析
 - [ ] Bad Cases 分析完成
 - [ ] 改进方向已确定
 - [ ] Milestone 报告提交
