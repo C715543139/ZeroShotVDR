@@ -53,8 +53,10 @@ ZeroShotVDR/
 ├── data/                          # 数据目录（不纳入版本控制）
 │   ├── MMLongBench/               # 原始数据集
 │   │   ├── raw/                   # Hugging Face 下载的 tar.gz 与解压目录
-│   │   │   ├── 0_mmlb_data.tar.gz
-│   │   │   ├── 1_vrag_image.tar.gz
+│   │   │   ├── 0_mmlb_data.tar.gz       # 元数据（Phase 1 必选）
+│   │   │   ├── 5_docqa_image.tar.gz      # DocumentQA 图像（Phase 2 baseline 必选）
+│   │   │   ├── 1_vrag_image.tar.gz       # 扩展任务资源（后续可选下载）
+│   │   │   ├── ...                       # 其他任务图像包
 │   │   │   ├── mmlb_data/
 │   │   │   └── mmlb_image/
 │   │   └── subsets/               # 可选：抽样子集/任务子集
@@ -167,13 +169,13 @@ Desktop.ini
 
 MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到细：
 
-| 层级        | 英文名        | 说明                     | 本项目中的值（Phase 2）                                    |
-| ----------- | ------------- | ------------------------ | ---------------------------------------------------------- |
-| L1 任务族   | `task_family` | MMLongBench 中的大类任务 | `docqa`, `icl`, `niah`, `summ`, `vrag`                     |
-| L2 子任务   | `subtask`     | 任务族下的具体数据集变体 | `longdocurl`, `mmlongdoc`, `slidevqa`, `text_mmlongdoc` 等 |
-| L3 长度档位 | `length`      | 上下文长度 K 值          | `K4`, `K8`, `K16`, `K32`, `K64`, `K128`                    |
-| L4 文档     | `doc_id`      | 单个文档的唯一标识       | JSONL/JSON 中的 `doc_id` 字段                              |
-| L5 页面     | `page_idx`    | 文档内的页码（0-based）  | 整数，从 0 开始                                            |
+| 层级        | 英文名        | 说明                             | 本项目中的值（Phase 2）                                    |
+| ----------- | ------------- | -------------------------------- | ---------------------------------------------------------- |
+| L1 任务族   | `task_family` | MMLongBench 中的大类任务         | `docqa`, `icl`, `niah`, `summ`, `vrag`                     |
+| L2 子任务   | `subtask`     | 任务族下的具体数据集变体         | `longdocurl`, `mmlongdoc`, `slidevqa`, `text_mmlongdoc` 等 |
+| L3 长度档位 | `length`      | 上下文长度 K 值                  | `K4`, `K8`, `K16`, `K32`, `K64`, `K128`                    |
+| L4 文档     | `doc_id`      | 单个文档的唯一标识（内部归一化） | 由原始 `doc_name` 字段通过 `normalize_doc_id()` 生成       |
+| L5 页面     | `page_idx`    | 文档内的页码（0-based）          | 整数，从 0 开始                                            |
 
 **全文统一命名规则：**
 
@@ -190,6 +192,10 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 1. 配置中的 `subsets` 字段使用 L1 任务族名（如 `["docqa"]`），长度档位和子任务过滤通过额外参数控制
 2. page_id 自带层级前缀，天然隔离不同任务族/子任务/档位之间的命名冲突
 3. 评测结果可按 `task_family` / `subtask` / `length` 任一粒度分组汇总，无需事后解析 ID 字符串
+
+**`doc_name` → `doc_id` 归一化规则**（v3 固定）：
+
+> DocumentQA 原始样本使用 `doc_name` 表示文档来源。系统内部统一使用归一化后的 `doc_id` 作为稳定文档标识，并保留 `raw_doc_name` 以便回溯。若原始数据未提供独立 `doc_id` 字段，则由 `doc_name` 通过 `normalize_doc_id()` 按统一规则生成，禁止在不同模块中各自临时构造。所有 Adapter 和 Corpus 必须通过此函数获得 `doc_id`。
 
 ---
 
@@ -551,8 +557,10 @@ uv run python -c "from datasets import load_dataset; ds = load_dataset('ZhaoweiW
 ```
 data/MMLongBench/
 ├── raw/
-│   ├── 0_mmlb_data.tar.gz
-│   ├── 1_vrag_image.tar.gz
+│   ├── 0_mmlb_data.tar.gz          # 元数据（Phase 1 必选）
+│   ├── 5_docqa_image.tar.gz        # DocumentQA 图像（Phase 2 baseline 必选）
+│   ├── 1_vrag_image.tar.gz         # 扩展任务资源（后续可选下载）
+│   ├── ...
 │   ├── mmlb_data/
 │   └── mmlb_image/
 └── processed/
@@ -654,12 +662,12 @@ data/MMLongBench/
 
 **文件**：`src/zeroshot_vdr/data/corpus.py`, `src/zeroshot_vdr/data/adapters.py`, `src/zeroshot_vdr/contracts.py`
 
-| 子步骤 | 内容                                                                                                                                                           |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, page_idx, image_path）、`Query`（query_id, text）、`RelevanceJudgment`（query_id, page_id, relevance）   |
-| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约               |
-| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json` |
-| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                         |
+| 子步骤 | 内容                                                                                                                                                                                                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, raw_doc_name, task_family, subtask, length, page_idx, image_path）、`Query`（query_id, text, doc_id, task_family, subtask, length）、`RetrievalResult`（query_id, page_id, score, rank）以及 ID 构造辅助函数 `normalize_doc_id()`, `build_page_id()`, `build_query_id()` |
+| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取原始 `doc_name` 字段，通过 `normalize_doc_id()` 转为内部 `doc_id`，读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约                                                                                                        |
+| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                                                                                                                                                                 |
+| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                                                                                                                                                                                         |
 
 **预期 API**：
 
@@ -667,17 +675,29 @@ data/MMLongBench/
 # src/zeroshot_vdr/contracts.py
 @dataclass
 class Page:
-    page_id: str       # 稳定唯一标识，如 "docqa/longdocurl_K4/abc123/p0"
+    page_id: str
     doc_id: str
+    raw_doc_name: str | None
+    task_family: str
+    subtask: str
+    length: str
     page_idx: int
     image_path: str
-    source_subset: str # 数据来源（docqa / icl / niah / ...）
 
 @dataclass
 class Query:
     query_id: str
     text: str
-    source_subset: str
+    doc_id: str
+    raw_doc_name: str | None
+    task_family: str
+    subtask: str
+    length: str
+
+# 全链路唯一合法的 ID 构造入口
+def normalize_doc_id(raw_doc_name: str) -> str: ...
+def build_page_id(task_family, subtask, length, doc_id, page_idx) -> str: ...
+def build_query_id(task_family, subtask, length, query_index) -> str: ...
 
 # src/zeroshot_vdr/data/corpus.py
 class PageCorpus:
@@ -713,10 +733,14 @@ class PageEncoder:
 # src/zeroshot_vdr/indexing/store.py
 class IndexStore:
     def __init__(self, index_dir: str): ...
+    # 核心接口
     def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
     def read_page(self, page_id: str) -> torch.Tensor: ...
-    def read_all(self, page_ids: list[str] | None = None) -> tuple[torch.Tensor, list[str]]: ...
-    def list_page_ids(self) -> list[str]: ...
+    def iter_pages(self, page_ids: list[str] | None = None): ...
+    def list_page_ids(self, doc_id: str | None = None) -> list[str]: ...
+    def get_mean_pooled_view(self, page_ids: list[str] | None = None): ...
+    # 便利函数（仅 patch 数一致时可用）
+    def read_stacked(self, page_ids: list[str]) -> tuple[torch.Tensor, list[str]]: ...
     @property
     def stats(self) -> dict: ...
 ```
@@ -725,14 +749,14 @@ class IndexStore:
 
 **文件**：`src/zeroshot_vdr/retrieval/encoder.py`, `src/zeroshot_vdr/retrieval/scoring.py`, `src/zeroshot_vdr/retrieval/pipeline.py`
 
-| 子步骤 | 内容                                                                                                                                                                               |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）                                                                                             |
-| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。独立为 `scoring.py`，便于后续替换或扩展打分函数                                                 |
-| 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                    |
-| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。Baseline 中候选召回=全量（等价于直接打分），但流水线结构已为 Phase 4 两阶段检索预留扩展点 |
-| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(page_id, score, rank)]`                                                                                                      |
-| 2.3.6  | 记录单次查询平均延迟                                                                                                                                                               |
+| 子步骤 | 内容                                                                                                                                                                                                                                                       |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）                                                                                                                                                                     |
+| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。独立为 `scoring.py`，便于后续替换或扩展打分函数                                                                                                                         |
+| 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                            |
+| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象，候选召回默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料），已在 4.5.5 中确立为文档内检索协议 |
+| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(page_id, score, rank)]`                                                                                                                                                                              |
+| 2.3.6  | 记录单次查询平均延迟                                                                                                                                                                                                                                       |
 
 **MaxSim 公式**：
 
@@ -760,9 +784,15 @@ def batched_maxsim(query_emb: torch.Tensor, pages_emb: torch.Tensor) -> torch.Te
 # src/zeroshot_vdr/retrieval/pipeline.py
 class RetrievalPipeline:
     def __init__(self, model, index_store: IndexStore, config: dict): ...
-    def encode_query(self, query: str) -> torch.Tensor: ...
-    def retrieve(self, query: str | torch.Tensor, top_k: int = 10) -> list[RetrievalResult]: ...
-    def retrieve_batch(self, queries: list[str], top_k: int = 10) -> list[list[RetrievalResult]]: ...
+    def encode_query(self, query_text: str) -> torch.Tensor: ...
+    def retrieve(self, query: Query, top_k: int = 10,
+                 candidate_ids: list[str] | None = None) -> list[RetrievalResult]: ...
+    def retrieve_text(self, text: str, candidate_ids: list[str],
+                      top_k: int = 10) -> list[RetrievalResult]: ...  # 便利包装
+    def retrieve_batch(self, queries: list[Query], top_k: int = 10
+                       ) -> list[list[RetrievalResult]]: ...
+    def generate_candidates(self, query: Query, query_emb: torch.Tensor,
+                            top_n: int | None = None) -> list[str]: ...
 ```
 
 #### Step 2.4 评测系统（成员 B） —— 2 天
@@ -941,36 +971,62 @@ class GroundTruthLoader:
 
 所有模块间传递的核心对象统一使用以下 dataclass，确保 page_id / query_id 在索引、检索、评测全链路中一致。
 
+> **v3 修订说明**：
+>
+> 1. `source_subset` 字段已不足以承载文档内检索、跨子任务评测和多档位对比的需求，
+>    替换为 `task_family` + `subtask` + `length` 的显式分层字段。
+> 2. `Query` 必须携带 `doc_id`，因为 baseline 采用文档内检索协议，
+>    候选集合需约束在同一文档的页面内（详见 4.5.5）。
+> 3. 新增 `raw_doc_name` 字段保留原始文档来源标识，便于调试和数据核对。
+> 4. `RetrievalResult` 新增 `query_id` 字段，使单条结果可独立追溯其来源查询。
+
+**DocumentQA 的文档标识来源**（v3 固定）：
+
+DocumentQA 原始样本使用 `doc_name` 表示文档来源。系统内部统一使用归一化后的 `doc_id` 作为稳定文档标识，并保留 `raw_doc_name` 以便回溯。若原始数据未提供独立 `doc_id` 字段，则由 `doc_name` 按统一规则生成（通过 `normalize_doc_id()`），禁止在不同模块中各自临时构造。
+
 ```python
 """
 数据契约：定义系统中跨模块传递的核心数据结构。
 所有 page_id / query_id 均为稳定字符串，贯穿索引→检索→评测全链路。
 """
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+
 
 @dataclass
 class Page:
     """页面语料中的单页。"""
     page_id: str           # 稳定唯一标识，格式: {task_family}/{subtask}_{length}/{doc_id}/p{page_idx}
-    doc_id: str            # 所属文档标识
+    doc_id: str            # 所属文档标识（由 raw_doc_name 归一化得到）
+    raw_doc_name: str | None  # 原始数据中的文档来源字段（doc_name），用于调试和回溯
+    task_family: str       # L1 任务族（docqa / icl / niah / summ / vrag）
+    subtask: str           # L2 子任务（longdocurl / mmlongdoc / slidevqa / ...）
+    length: str            # L3 长度档位（K4 / K8 / K16 / K32 / K64 / K128）
     page_idx: int          # 文档内页码（0-based）
     image_path: str        # 页面图像文件路径
-    source_subset: str     # 数据来源子集（docqa / icl / niah / summ / vrag）
 
 
 @dataclass
 class Query:
-    """单条检索查询。"""
-    query_id: str          # 稳定唯一标识
+    """单条检索查询。
+
+    由于 baseline 采用文档内检索，Query 必须显式携带所属文档标识 doc_id，
+    以便默认候选集合能够约束在同一文档页面内。纯文本字符串查询仅作为便利接口存在，
+    不作为 baseline 主协议。
+    """
+    query_id: str          # 稳定唯一标识，格式: {task_family}/{subtask}_{length}/{query_index}
     text: str              # 查询文本
-    source_subset: str     # 所属数据子集
+    doc_id: str            # 所属文档标识（决定默认候选范围）
+    raw_doc_name: str | None  # 原始数据中的文档来源字段
+    task_family: str       # L1 任务族
+    subtask: str           # L2 子任务
+    length: str            # L3 长度档位
 
 
 @dataclass
 class RetrievalResult:
     """单条检索命中结果。"""
+    query_id: str          # 来源查询的稳定 ID（便于结果追溯）
     page_id: str           # 命中页面的稳定 ID
     score: float           # 相似度分数
     rank: int              # 排名（1-based）
@@ -982,7 +1038,52 @@ class RelevanceJudgment:
     query_id: str
     page_id: str
     relevance: int         # 0/1 或分级相关度
+
+
+# ---- ID 构造辅助函数（v3 新增） ----
+
+def normalize_doc_id(raw_doc_name: str) -> str:
+    """将原始 doc_name 归一化为内部稳定 doc_id。
+
+    规则由实现阶段根据实际数据特征确定（如去空格、统一大小写、
+    移除特殊字符等）。所有 Adapter 和 Corpus 必须通过此函数获得 doc_id，
+    禁止各自临时构造。
+    """
+    ...
+
+
+def build_page_id(
+    task_family: str,
+    subtask: str,
+    length: str,
+    doc_id: str,
+    page_idx: int,
+) -> str:
+    """构造稳定的 page_id。
+
+    格式：{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}
+    这是全链路唯一合法的 page_id 构造入口。
+    """
+    ...
+
+
+def build_query_id(
+    task_family: str,
+    subtask: str,
+    length: str,
+    query_index: int,
+) -> str:
+    """构造稳定的 query_id。
+
+    格式：{task_family}/{subtask}_{length}/q{query_index:0>3d}
+    这是全链路唯一合法的 query_id 构造入口。
+    """
+    ...
 ```
+
+**ID 构造约束**（v3 固定）：
+
+`build_page_id()` 和 `build_query_id()` 是全链路唯一合法的 ID 构造入口。`GroundTruthLoader`、`DocumentQAAdapter`、`PageCorpus` 和结果落盘模块不得自行拼接 ID 字符串，必须通过上述函数获取。这一约束能显著减少隐式不一致。
 
 ---
 
@@ -1015,8 +1116,9 @@ class DocumentQAAdapter(BaseAdapter):
     MMLongBench DocumentQA 子集适配器。
 
     输入：mmlb_data/documentQA/ 下的 JSONL 文件（含 page_list + ans_page_list）。
+    原始文档来源字段为 doc_name，适配器内部通过 normalize_doc_id() 转为 doc_id。
     输出：Page（page_id = "docqa/{subtask}_{length}/{doc_id}/p{idx}"）、
-          Query、RelevanceJudgment。
+          Query（携带 doc_id 以支持文档内检索协议）、RelevanceJudgment。
     """
 
     def __init__(self, data_dir: str, subset_filter: str | None = None): ...
@@ -1135,31 +1237,60 @@ class IndexStore:
         ├── page_ids.json       # [page_id, ...] 有序列表
         └── index_meta.json     # 模型名、维度、时间戳、总页数
 
-    支持的操作：写入、读取（单页/批量/全量）、增量追加、统计。
+    IndexStore 的稳定读取语义为按页读取与按页面列表迭代读取。
+    任何需要返回全量 stacked tensor 的接口均视为 baseline 便利函数，
+    而非变长 patch 场景下的通用接口。
     """
 
     def __init__(self, index_dir: str): ...
 
-    # -- 写入 --
+    # -- 核心接口：写入 --
     def write_page(self, page_id: str, embedding: torch.Tensor) -> None: ...
     def write_batch(self, page_ids: list[str],
                     embeddings: torch.Tensor) -> None: ...
 
-    # -- 读取 --
-    def read_page(self, page_id: str) -> torch.Tensor: ...
-    def read_batch(self, page_ids: list[str]) -> torch.Tensor:
-        """返回 [len(page_ids), n_patches, dim]（需各页 patch 数相同）"""
+    # -- 核心接口：读取 --
+    def read_page(self, page_id: str) -> torch.Tensor:
+        """读取单页 embedding → [n_patches, dim]。"""
         ...
-    def read_all(self) -> tuple[torch.Tensor, list[str]]:
+
+    def iter_pages(self, page_ids: list[str] | None = None):
+        """按页迭代读取，兼容变长 patch 场景。
+
+        Parameters
+        ----------
+        page_ids : list[str] | None
+            要读取的页面列表；None 表示全部页面。
+
+        Yields
+        ------
+        tuple[str, torch.Tensor] : (page_id, embedding [n_patches, dim])
+        """
+        ...
+
+    def list_page_ids(self, doc_id: str | None = None) -> list[str]:
+        """列出索引中的页面 ID。
+
+        Parameters
+        ----------
+        doc_id : str | None
+            限定文档；None 表示全部页面。
+        """
+        ...
+
+    # -- 稳定视图接口 --
+    def get_mean_pooled_view(self, page_ids: list[str] | None = None
+                             ) -> tuple[torch.Tensor, list[str]]:
+        """返回页面的均值池化向量 [n_pages, dim]，供两阶段粗筛使用。"""
+        ...
+
+    # -- baseline 便利函数（非核心抽象，变长 patch 场景不可用） --
+    def read_stacked(self, page_ids: list[str]) -> tuple[torch.Tensor, list[str]]:
         """返回 (stacked_tensor, page_id_list)。
-        仅当全量页面 patch 数相同时可用；变长场景请逐页读取。"""
-        ...
 
-    def list_page_ids(self) -> list[str]: ...
-
-    # -- 视图 --
-    def get_mean_pooled_view(self) -> tuple[torch.Tensor, list[str]]:
-        """返回全量页面的均值池化向量 [n_pages, dim]，供两阶段粗筛使用。"""
+        仅在所有页面 patch 数一致时使用的便利函数。
+        变长 patch 场景请使用 iter_pages()。
+        """
         ...
 
     # -- 元信息 --
@@ -1235,10 +1366,15 @@ class RetrievalPipeline:
     检索流水线编排器。
 
     流程：
-    1. encode_query(query)      → query embedding
-    2. generate_candidates()    → 候选 page_id 列表（baseline = 全量）
-    3. score_candidates()       → 对候选逐批 MaxSim 打分
-    4. assemble_results(top_k)  → 排序、截断、封装为 RetrievalResult 列表
+    1. encode_query(query.text)  → query embedding
+    2. generate_candidates(query) → 候选 page_id 列表
+    3. score_candidates()         → 对候选逐批 MaxSim 打分
+    4. assemble_results(top_k)    → 排序、截断、封装为 RetrievalResult 列表
+
+    Baseline 模式下，retrieve() 接收 Query 对象而不是纯文本字符串。
+    若 candidate_ids 为空，则 generate_candidates() 默认返回与 query.doc_id
+    对应的全部页面，即文档内候选集合，而不是全局页面集合。
+    仅在显式启用 global retrieval 实验配置时，候选范围才允许扩展为全局语料。
 
     Phase 4 中可通过替换 generate_candidates() 策略接入两阶段检索。
     """
@@ -1247,21 +1383,22 @@ class RetrievalPipeline:
                  query_encoder: QueryEncoder | None = None,
                  config: dict | None = None): ...
 
-    def encode_query(self, query: str) -> torch.Tensor: ...
+    def encode_query(self, query_text: str) -> torch.Tensor: ...
 
-    def retrieve(self, query: str | torch.Tensor,
+    def retrieve(self, query: Query,
                  top_k: int = 10,
                  candidate_ids: list[str] | None = None,
                  score_batch_size: int = 64) -> list[RetrievalResult]:
         """
-        检索 Top-k 相关页面。
+        检索 Top-k 相关页面（baseline 主协议）。
 
         Parameters
         ----------
-        query : str | torch.Tensor
+        query : Query
+            检索查询对象，必须携带 doc_id。
         top_k : int
         candidate_ids : list[str] | None
-            候选页面列表；为 None 时默认全量检索。
+            候选页面列表；为 None 时默认使用 query.doc_id 对应的文档内页面集合。
         score_batch_size : int
             逐批计算 MaxSim 的页面 batch 大小。
 
@@ -1271,16 +1408,30 @@ class RetrievalPipeline:
         """
         ...
 
-    def retrieve_batch(self, queries: list[str],
+    def retrieve_text(self, text: str,
+                      candidate_ids: list[str],
+                      top_k: int = 10) -> list[RetrievalResult]:
+        """
+        纯文本查询的便利包装接口。
+
+        此接口不承担 baseline 默认协议。调用方必须显式提供 candidate_ids。
+        内部构造临时 Query 对象后委托给 retrieve()。
+        """
+        ...
+
+    def retrieve_batch(self, queries: list[Query],
                        top_k: int = 10,
                        **kwargs) -> list[list[RetrievalResult]]: ...
 
-    def generate_candidates(self, query_emb: torch.Tensor,
+    def generate_candidates(self, query: Query,
+                            query_emb: torch.Tensor,
                             top_n: int | None = None) -> list[str]:
         """
         候选召回阶段。
-        Baseline：返回全量 page_ids。
+
+        Baseline：返回与 query.doc_id 对应的全部页面（文档内候选）。
         Phase 4：可替换为均值池化粗筛。
+        仅在显式启用全局检索配置时，候选范围才允许跳出文档内约束。
         """
         ...
 
@@ -1378,8 +1529,28 @@ class GroundTruthLoader:
         ...
 
     @staticmethod
-    def build_page_id(subset: str, doc_id: str, page_idx: int) -> str:
-        """构造与 PageCorpus 一致的 page_id。"""
+    def build_page_id(
+        task_family: str,
+        subtask: str,
+        length: str,
+        doc_id: str,
+        page_idx: int,
+    ) -> str:
+        """构造与 PageCorpus 一致的 page_id。
+
+        必须使用与 contracts.py 中 build_page_id() 完全一致的参数和格式。
+        Ground truth 侧不得使用比语料构建侧更弱的主键体系。
+        """
+        ...
+
+    @staticmethod
+    def build_query_id(
+        task_family: str,
+        subtask: str,
+        length: str,
+        query_index: int,
+    ) -> str:
+        """构造与 PageCorpus 一致的 query_id。"""
         ...
 ```
 
@@ -1473,6 +1644,14 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 **注**：K32 被选为主档位的原因：它在长度档位中处于中间位置，页面数适中（不会太少导致指标方差大，也不会太多导致索引构建时间过长），且 MMLongBench 论文中常以中间档位作为主要对比点。
 
+**主评测子任务范围**（v3 固定）：
+
+> Phase 2-3 的主评测范围固定为 DocumentQA 中的 `longdocurl`、`mmlongdoc`、`slidevqa` 三个子任务。`text_mmlongdoc` 不纳入主评测表，除非后续确认其图像页面与标注协议可与当前页级检索设置严格对齐。此约束直接影响数据加载、结果统计和报告主表。
+
+**Baseline 检索协议的接口层落实**（v3 固定）：
+
+> Baseline 模式下，`RetrievalPipeline.retrieve()` 接收 `Query` 对象（非纯文本字符串），其默认候选范围是与 `query.doc_id` 对应的页面集合，而不是全局语料集合。只有在显式启用全局检索实验配置时，系统才允许跳出文档内候选范围。`retrieve_text()` 仅作为便利包装接口存在，不承担 baseline 默认协议。
+
 #### 4.5.6 索引存储策略的阶段性权衡（v2 新增）
 
 逐页独立存储方案在为增量追加和变长 patch 提供便利的同时，存在以下需要留意的权衡：
@@ -1504,10 +1683,10 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 | 便利实现                                                    | Phase 4 的可能变化                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------------- |
-| `IndexStore.read_all()` 返回全量 stacked tensor             | 变长 patch 时不可用，需改为逐页循环；不影响核心抽象         |
-| `RetrievalPipeline.generate_candidates()` 默认返回全量      | Phase 4B 替换为均值池化粗筛                                 |
+| `IndexStore.read_stacked()` 返回全量 stacked tensor         | 变长 patch 时不可用，需改用 `iter_pages()`；不影响核心抽象  |
+| `RetrievalPipeline.generate_candidates()` 默认文档内候选    | Phase 4B 替换为均值池化粗筛；全局检索需显式配置             |
 | `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | Phase 4A 后各页 patch 数可能不同，需改为逐页或 padding 策略 |
-| `GroundTruthLoader.load()` 默认加载全量                     | 可通过 `subset` 参数限定，不影响接口                        |
+| `RetrievalPipeline.retrieve_text()` 纯文本便利包装          | 不承担 baseline 默认协议；调用方需显式提供 candidate_ids    |
 
 这一区分的关键作用：当 Phase 4 需要改动某处时，可以先判断该处属于"核心抽象"还是"便利实现"，避免在核心抽象上做破坏性修改。
 
@@ -1534,12 +1713,12 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 **缓解措施**：
 
-| 场景        | 策略                                           |
-| ----------- | ---------------------------------------------- |
-| 图像编码    | `batch_size=4`（或更小），使用 `torch.float16` |
-| 索引加载    | 使用 `mmap_mode=True` 加载 `.pt`，避免全量加载 |
-| MaxSim 计算 | 分批计算（page batch），避免构建完整相似度矩阵 |
-| 进阶方法    | 候选方向 A（压缩索引）天然减低显存需求         |
+| 场景        | 策略                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 图像编码    | `batch_size=4`（或更小），使用 `torch.float16`                                                                                                   |
+| 索引加载    | 按页加载或按批加载控制内存占用，不依赖 `mmap_mode`。若后续引入分片化的 `npy`、`safetensors` 或其他支持内存映射的存储格式，再单独评估 memmap 方案 |
+| MaxSim 计算 | 分批计算（page batch），避免构建完整相似度矩阵                                                                                                   |
+| 进阶方法    | 候选方向 A（压缩索引）天然减低显存需求                                                                                                           |
 
 **显存预算估算**（ColPali-v1.3）：
 
