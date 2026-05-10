@@ -11,7 +11,10 @@
 ## 目录
 
 - [一、推荐项目结构](#一推荐项目结构)
-  - [1.1 命名分层与概念体系](#11-命名分层与概念体系)
+  │ ├── core_module_revision_v1.md
+  │ ├── core_module_revision_v2.md
+  │ ├── core_module_revision_v3.md
+  │ └── core_module_revision_v4.md
 - [二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）](#二环境配置指导win10-原生--rtx-4060-laptop--conda--uv)
   - [2.1 概览：分层管理](#21-概览分层管理)
   - [2.2 NVIDIA 驱动与 CUDA](#22-nvidia-驱动与-cuda)
@@ -662,12 +665,12 @@ data/MMLongBench/
 
 **文件**：`src/zeroshot_vdr/data/corpus.py`, `src/zeroshot_vdr/data/adapters.py`, `src/zeroshot_vdr/contracts.py`
 
-| 子步骤 | 内容                                                                                                                                                                                                                                                                                                                           |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, raw_doc_name, task_family, subtask, length, page_idx, image_path）、`Query`（query_id, text, doc_id, task_family, subtask, length）、`RetrievalResult`（query_id, page_id, score, rank）以及 ID 构造辅助函数 `normalize_doc_id()`, `build_page_id()`, `build_query_id()` |
-| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取原始 `doc_name` 字段，通过 `normalize_doc_id()` 转为内部 `doc_id`，读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约                                                                                                        |
-| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                                                                                                                                                                 |
-| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                                                                                                                                                                                         |
+| 子步骤 | 内容                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, raw_doc_name, task_family, subtask, length, page_idx, image_path）、`Query`（query_id, text, doc_id, raw_doc_name, task_family, subtask, length）、`RetrievalResult`（query_id, page_id, score, rank）、`RelevanceJudgment`（query_id, page_id, relevance）以及 ID 构造辅助函数 `normalize_doc_id()`, `build_page_id()`, `build_query_id()` |
+| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取原始 `doc_name` 字段，通过 `normalize_doc_id()` 转为内部 `doc_id`，读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约                                                                                                                                                                           |
+| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                                                                                                                                                                                                                                    |
+| 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                                                                                                                                                                                                                                                            |
 
 **预期 API**：
 
@@ -755,7 +758,7 @@ class IndexStore:
 | 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。独立为 `scoring.py`，便于后续替换或扩展打分函数                                                                                                                         |
 | 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                            |
 | 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象，候选召回默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料），已在 4.5.5 中确立为文档内检索协议 |
-| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(page_id, score, rank)]`                                                                                                                                                                              |
+| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(query_id, page_id, score, rank)]`                                                                                                                                                                    |
 | 2.3.6  | 记录单次查询平均延迟                                                                                                                                                                                                                                       |
 
 **MaxSim 公式**：
@@ -783,13 +786,17 @@ def batched_maxsim(query_emb: torch.Tensor, pages_emb: torch.Tensor) -> torch.Te
 
 # src/zeroshot_vdr/retrieval/pipeline.py
 class RetrievalPipeline:
-    def __init__(self, model, index_store: IndexStore, config: dict): ...
+    def __init__(self, model, index_store: IndexStore,
+                 query_encoder: QueryEncoder | None = None,
+                 config: dict | None = None): ...
     def encode_query(self, query_text: str) -> torch.Tensor: ...
     def retrieve(self, query: Query, top_k: int = 10,
-                 candidate_ids: list[str] | None = None) -> list[RetrievalResult]: ...
+                 candidate_ids: list[str] | None = None,
+                 score_batch_size: int = 64) -> list[RetrievalResult]: ...
     def retrieve_text(self, text: str, candidate_ids: list[str],
                       top_k: int = 10) -> list[RetrievalResult]: ...  # 便利包装
-    def retrieve_batch(self, queries: list[Query], top_k: int = 10
+    def retrieve_batch(self, queries: list[Query], top_k: int = 10,
+                       **kwargs
                        ) -> list[list[RetrievalResult]]: ...
     def generate_candidates(self, query: Query, query_emb: torch.Tensor,
                             top_n: int | None = None) -> list[str]: ...
@@ -958,7 +965,7 @@ class GroundTruthLoader:
 
 ## 四、核心模块接口设计
 
-> **v1 修订说明**：本章根据 `docs/revision/core_module_revision_v1.md` 进行了重构。
+> **修订汇总说明**：本章综合吸收 `docs/revision/core_module_revision_v1.md` 至 `docs/revision/core_module_revision_v4.md` 的逐轮修订结果。
 > 核心变化：（1）预处理层从"PDF 渲染"转向"语料构建 + 数据适配"；
 > （2）索引存储从单一巨型张量改为每页独立文件，支持变长 patch 数；
 > （3）检索层从单一 Retriever 类改为分环节流水线；
@@ -1304,7 +1311,7 @@ class IndexStore:
 
 ### 4.3 检索层（`retrieval/`）
 
-**设计原则**：检索不是单一步骤，而是"查询编码 → 候选召回 → 精排打分 → 结果组装"的流水线。Baseline 中候选召回=全量（等价于直接全量 MaxSim），但流水线结构已为 Phase 4 两阶段检索预留扩展点。
+**设计原则**：检索不是单一步骤，而是"查询编码 → 候选召回 → 精排打分 → 结果组装"的流水线。Baseline 中候选召回=文档内全量页面（等价于在单文档候选集上直接执行 full MaxSim），但流水线结构已为 Phase 4 两阶段检索预留扩展点。
 
 ```python
 """
@@ -1600,7 +1607,7 @@ class GroundTruthLoader:
 encode_query → generate_candidates → score_candidates → assemble_results
 ```
 
-- **Baseline**：`generate_candidates` 返回全量 page_ids，等价于原行为。
+- **Baseline**：`generate_candidates` 默认返回当前 `query.doc_id` 对应文档内的全部 page_ids，等价于当前 baseline 的文档内全量候选行为。
 - **两阶段检索（Phase 4B）**：只需替换 `generate_candidates` 为均值池化粗筛，其余环节复用。
 - **索引压缩（Phase 4A）**：只需在 `score_candidates` 中处理变长 patch 的张量。
 
