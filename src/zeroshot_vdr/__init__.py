@@ -9,6 +9,12 @@ from zeroshot_vdr.contracts import (
     build_query_id,
     normalize_doc_id,
 )
+from zeroshot_vdr.retrieval import (
+    QueryEncoder,
+    RetrievalPipeline,
+    batched_maxsim,
+    maxsim_score,
+)
 
 __all__: list[str] = [
     "Page",
@@ -18,4 +24,8 @@ __all__: list[str] = [
     "build_page_id",
     "build_query_id",
     "normalize_doc_id",
+    "QueryEncoder",
+    "RetrievalPipeline",
+    "batched_maxsim",
+    "maxsim_score",
 ]

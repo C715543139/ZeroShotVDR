@@ -776,12 +776,12 @@ class IndexStore:
 
 | 子步骤 | 内容                                                                                                                                                                                                                                                       |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）                                                                                                                                                                     |
-| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。独立为 `scoring.py`，便于后续替换或扩展打分函数                                                                                                                         |
+| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）。当前实现中的 `QueryEncoder` 需要 `model + processor`，并额外提供 `from_pretrained()` / `from_page_encoder()` / `encode_batch()` 作为便利构造与批量接口。 |
+| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。当前默认 `Sim` 为 **L2 归一化后的点积**（等价于余弦相似度），独立为 `scoring.py`，便于后续替换或扩展打分函数。                                                      |
 | 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                            |
-| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象，候选召回默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料），已在 4.5.5 中确立为文档内检索协议 |
+| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象；仅当 `candidate_ids is None` 时，候选召回才默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料）。若显式传入 `candidate_ids=[]`，当前实现会将其视为**空候选集**并直接返回空结果。 |
 | 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(query_id, page_id, score, rank)]`                                                                                                                                                                    |
-| 2.3.6  | 记录单次查询平均延迟                                                                                                                                                                                                                                       |
+| 2.3.6  | 记录查询耗时。当前实现会在 `retrieve()` 内统计**单次查询耗时**并输出 debug 日志；并未在检索层维护公共的“平均延迟”累积状态，后续若需平均值，应在评测/实验层聚合。                                                                                          |
 
 **MaxSim 公式**：
 
@@ -791,37 +791,53 @@ Score(Q, P) = Σ_i max_j Sim(q_i, p_j)
 其中：
 - Q = {q_1, ..., q_m} 为查询的 m 个 token embeddings
 - P = {p_1, ..., p_n} 为页面的 n 个 patch embeddings
-- Sim 通常为余弦相似度或点积
+- 当前实现默认使用 **L2 归一化后的点积**（等价于余弦相似度）；同时保留 `norm` 参数以允许关闭归一化
 ```
 
 **预期 API**：
 
 ```python
 # src/zeroshot_vdr/retrieval/scoring.py
-def maxsim_score(query_emb: torch.Tensor, page_emb: torch.Tensor) -> torch.Tensor:
+def maxsim_score(query_emb: torch.Tensor,
+                 page_emb: torch.Tensor,
+                 norm: bool = True) -> torch.Tensor:
     """返回标量 score"""
     ...
 
-def batched_maxsim(query_emb: torch.Tensor, pages_emb: torch.Tensor) -> torch.Tensor:
+def batched_maxsim(query_emb: torch.Tensor,
+                   pages_emb: torch.Tensor,
+                   norm: bool = True) -> torch.Tensor:
     """返回 [batch_size] scores"""
+    ...
+
+def batched_maxsim_variable(query_emb: torch.Tensor,
+                            pages_list: list[torch.Tensor],
+                            norm: bool = True) -> torch.Tensor:
+    """变长 patch 回退路径：逐页返回 scores"""
     ...
 
 # src/zeroshot_vdr/retrieval/pipeline.py
 class RetrievalPipeline:
     def __init__(self, model, index_store: IndexStore,
+                 processor=None,
                  query_encoder: QueryEncoder | None = None,
                  config: dict | None = None): ...
     def encode_query(self, query_text: str) -> torch.Tensor: ...
     def retrieve(self, query: Query, top_k: int = 10,
                  candidate_ids: list[str] | None = None,
-                 score_batch_size: int = 64) -> list[RetrievalResult]: ...
+                 score_batch_size: int | None = None) -> list[RetrievalResult]: ...
     def retrieve_text(self, text: str, candidate_ids: list[str],
                       top_k: int = 10) -> list[RetrievalResult]: ...  # 便利包装
     def retrieve_batch(self, queries: list[Query], top_k: int = 10,
                        **kwargs
                        ) -> list[list[RetrievalResult]]: ...
-    def generate_candidates(self, query: Query, query_emb: torch.Tensor,
+    def generate_candidates(self, query: Query,
+                            query_emb: torch.Tensor | None = None,
                             top_n: int | None = None) -> list[str]: ...
+    def score_candidates(self, query_emb: torch.Tensor,
+                         candidate_ids: list[str],
+                         batch_size: int | None = None
+                         ) -> tuple[torch.Tensor, list[str]]: ...
 ```
 
 #### Step 2.4 评测系统（成员 B） —— 2 天
@@ -1424,15 +1440,27 @@ from zeroshot_vdr.indexing.store import IndexStore
 class QueryEncoder:
     """ColPali 查询编码器。"""
 
-    def __init__(self, model): ...
+    def __init__(self, model, processor, device: str = "cuda:0"): ...
+    @classmethod
+    def from_pretrained(cls, model_repo: str = "vidore/colpali-v1.3",
+                        base_repo: str = "vidore/colpaligemma-3b-pt-448-base",
+                        device: str = "cuda:0",
+                        dtype: torch.dtype | None = None) -> "QueryEncoder": ...
+    @classmethod
+    def from_page_encoder(cls, page_encoder) -> "QueryEncoder": ...
     def encode(self, query: str) -> torch.Tensor:
         """文本查询 → [n_tokens, dim]"""
+        ...
+    def encode_batch(self, queries: list[str]) -> torch.Tensor:
+        """批量文本查询 → [batch, n_tokens, dim]"""
         ...
 
 
 # -- 打分函数（scoring.py） --
 
-def maxsim_score(query_emb: torch.Tensor, page_emb: torch.Tensor) -> torch.Tensor:
+def maxsim_score(query_emb: torch.Tensor,
+                 page_emb: torch.Tensor,
+                 norm: bool = True) -> torch.Tensor:
     """
     MaxSim 相似度（单页）。
 
@@ -1448,7 +1476,8 @@ def maxsim_score(query_emb: torch.Tensor, page_emb: torch.Tensor) -> torch.Tenso
     ...
 
 def batched_maxsim(query_emb: torch.Tensor,
-                   pages_emb: torch.Tensor) -> torch.Tensor:
+                   pages_emb: torch.Tensor,
+                   norm: bool = True) -> torch.Tensor:
     """
     批量 MaxSim。
 
@@ -1460,6 +1489,23 @@ def batched_maxsim(query_emb: torch.Tensor,
     Returns
     -------
     torch.Tensor : [batch_size] scores
+    """
+    ...
+
+def batched_maxsim_variable(query_emb: torch.Tensor,
+                            pages_list: list[torch.Tensor],
+                            norm: bool = True) -> torch.Tensor:
+    """
+    变长 patch 页面列表的回退打分路径。
+
+    Parameters
+    ----------
+    query_emb : [n_tokens, dim]
+    pages_list : list[[n_patches_i, dim]]
+
+    Returns
+    -------
+    torch.Tensor : [len(pages_list)] scores
     """
     ...
 
@@ -1477,14 +1523,17 @@ class RetrievalPipeline:
     4. assemble_results(top_k)    → 排序、截断、封装为 RetrievalResult 列表
 
     Baseline 模式下，retrieve() 接收 Query 对象而不是纯文本字符串。
-    若 candidate_ids 为空，则 generate_candidates() 默认返回与 query.doc_id
-    对应的全部页面，即文档内候选集合，而不是全局页面集合。
+    仅当 candidate_ids is None 时，generate_candidates() 才默认返回与
+    query.doc_id 对应的全部页面，即文档内候选集合，而不是全局页面集合。
+    若调用方显式传入 candidate_ids=[]，当前实现会将其视为“空候选集”，
+    retrieve() 将直接返回空结果，而不会回退到默认候选生成。
     仅在显式启用 global retrieval 实验配置时，候选范围才允许扩展为全局语料。
 
     Phase 4 中可通过替换 generate_candidates() 策略接入两阶段检索。
     """
 
     def __init__(self, model, index_store: IndexStore,
+                 processor=None,
                  query_encoder: QueryEncoder | None = None,
                  config: dict | None = None): ...
 
@@ -1493,7 +1542,7 @@ class RetrievalPipeline:
     def retrieve(self, query: Query,
                  top_k: int = 10,
                  candidate_ids: list[str] | None = None,
-                 score_batch_size: int = 64) -> list[RetrievalResult]:
+                 score_batch_size: int | None = None) -> list[RetrievalResult]:
         """
         检索 Top-k 相关页面（baseline 主协议）。
 
@@ -1504,8 +1553,9 @@ class RetrievalPipeline:
         top_k : int
         candidate_ids : list[str] | None
             候选页面列表；为 None 时默认使用 query.doc_id 对应的文档内页面集合。
-        score_batch_size : int
-            逐批计算 MaxSim 的页面 batch 大小。
+            若显式传入空列表，则视为“空候选集”，返回空结果。
+        score_batch_size : int | None
+            逐批计算 MaxSim 的页面 batch 大小；None 表示使用配置默认值。
 
         Returns
         -------
@@ -1520,7 +1570,8 @@ class RetrievalPipeline:
         纯文本查询的便利包装接口。
 
         此接口不承担 baseline 默认协议。调用方必须显式提供 candidate_ids。
-        内部构造临时 Query 对象后委托给 retrieve()。
+        内部构造临时 Query 对象（当前实现中 `query_id="adhoc/q000"`，
+        其余文档级元信息留空）后委托给 retrieve()。
         """
         ...
 
@@ -1529,7 +1580,7 @@ class RetrievalPipeline:
                        **kwargs) -> list[list[RetrievalResult]]: ...
 
     def generate_candidates(self, query: Query,
-                            query_emb: torch.Tensor,
+                            query_emb: torch.Tensor | None = None,
                             top_n: int | None = None) -> list[str]:
         """
         候选召回阶段。
@@ -1542,8 +1593,9 @@ class RetrievalPipeline:
 
     def score_candidates(self, query_emb: torch.Tensor,
                          candidate_ids: list[str],
-                         batch_size: int = 64) -> torch.Tensor:
-        """对候选集逐批 MaxSim 打分，返回 [n_candidates] scores。"""
+                         batch_size: int | None = None
+                         ) -> tuple[torch.Tensor, list[str]]:
+        """对候选集逐批 MaxSim 打分，返回 `(scores, scored_page_ids)`。"""
         ...
 ```
 
@@ -1755,7 +1807,7 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 **Baseline 检索协议的接口层落实**（v3 固定）：
 
-> Baseline 模式下，`RetrievalPipeline.retrieve()` 接收 `Query` 对象（非纯文本字符串），其默认候选范围是与 `query.doc_id` 对应的页面集合，而不是全局语料集合。只有在显式启用全局检索实验配置时，系统才允许跳出文档内候选范围。`retrieve_text()` 仅作为便利包装接口存在，不承担 baseline 默认协议。
+> Baseline 模式下，`RetrievalPipeline.retrieve()` 接收 `Query` 对象（非纯文本字符串）。仅当 `candidate_ids is None` 时，其默认候选范围才是与 `query.doc_id` 对应的页面集合，而不是全局语料集合；若显式传入 `candidate_ids=[]`，当前实现会直接返回空结果。只有在显式启用全局检索实验配置时，系统才允许跳出文档内候选范围。`retrieve_text()` 仅作为便利包装接口存在，不承担 baseline 默认协议，调用方必须显式提供 `candidate_ids`。
 
 #### 4.5.6 索引存储策略的阶段性权衡（v2 新增）
 
@@ -1790,7 +1842,7 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 | ----------------------------------------------------------- | ----------------------------------------------------------- |
 | `IndexStore.read_stacked()` 返回全量 stacked tensor         | 变长 patch 时不可用，需改用 `iter_pages()`；不影响核心抽象  |
 | `RetrievalPipeline.generate_candidates()` 默认文档内候选    | Phase 4B 替换为均值池化粗筛；全局检索需显式配置             |
-| `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | Phase 4A 后各页 patch 数可能不同，需改为逐页或 padding 策略 |
+| `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | 当前实现已提供 `batched_maxsim_variable()` 作为逐页回退路径；Phase 4A 后也可继续演进为 padding / 分桶策略 |
 | `RetrievalPipeline.retrieve_text()` 纯文本便利包装          | 不承担 baseline 默认协议；调用方需显式提供 candidate_ids    |
 
 这一区分的关键作用：当 Phase 4 需要改动某处时，可以先判断该处属于"核心抽象"还是"便利实现"，避免在核心抽象上做破坏性修改。
