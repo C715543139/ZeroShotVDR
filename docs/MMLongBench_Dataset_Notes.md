@@ -1,7 +1,7 @@
 # MMLongBench 数据集探索笔记
 
 > **项目**：ZeroShotVDR  
-> **日期**：2026-05-08（初稿），2026-05-10（Step 2.1 实现后更新）  
+> **日期**：2026-05-08（初稿），2026-05-10（Step 2.1 实现后更新），2026-05-11（移除 VRAG 图像包后更新）  
 > **数据来源**：[ZhaoweiWang/MMLongBench](https://huggingface.co/datasets/ZhaoweiWang/MMLongBench)（NeurIPS 2025 Spotlight）  
 > **论文参考**：`docs/paper/MMLongBench.pdf`
 
@@ -247,15 +247,15 @@ MMLongBench 是首个面向长上下文视觉语言模型（LCVLM）的综合性
 
 ### 5.1 已下载图像包
 
-| 图像包                 | 内容                               | 本地路径                                                                                                     | 规模                          |
-| ---------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| `1_vrag_image.tar.gz`  | VRAG 任务图像（infoseek + viquae） | `data/MMLongBench/raw/mmlb_image/infoseek/`（2,232 文件）, `viquae/`（3,317 文件）                           | 5,549 图像文件                |
-| `5_docqa_image.tar.gz` | DocumentQA 任务图像                | `data/MMLongBench/raw/mmlb_image/longdocurl/`（396 文档目录）, `mmlongbench-doc/`（135）, `slideVQA/`（293） | 824 文档目录，~40,000+ 页图像 |
+| 图像包                 | 内容                | 本地路径                                                                                 | 规模         |
+| ---------------------- | ------------------- | ---------------------------------------------------------------------------------------- | ------------ |
+| `5_docqa_image.tar.gz` | DocumentQA 任务图像 | `mmlb_image/longdocurl/`（396 文档目录）, `mmlongbench-doc/`（135）, `slideVQA/`（293） | ~40,000+ 页 |
 
-> **已下载**：`0_mmlb_data.tar.gz`（元数据）、`1_vrag_image.tar.gz`（VRAG 图像）、`5_docqa_image.tar.gz`（DocumentQA 图像）。
+> **已下载并解压**：`0_mmlb_data.tar.gz`（元数据/提示，所有 5 个任务族）+ `5_docqa_image.tar.gz`（DocumentQA 图像）。
 >
 > **尚未下载的图像包**：
 >
+> - `1_vrag_image.tar.gz`（VRAG）
 > - `2_vh_image.tar.gz` / `2_mm-niah_image.tar.gz`（NIAH）
 > - `3_icl_image.tar.gz`（ICL）
 > - `4_summ_image.tar.gz`（Summ）
@@ -264,11 +264,11 @@ MMLongBench 是首个面向长上下文视觉语言模型（LCVLM）的综合性
 
 数据文件中引用的图像路径均为**相对于 `mmlb_image/` 目录**的相对路径。例如：
 
-- VRAG: `infoseek/oven_04953036.jpg`
 - DocumentQA — longdocurl: `longdocurl/{doc_id}/{doc_id}_page{N}.jpg`（页码 N 为 1-based）
 - DocumentQA — mmlongdoc: `mmlongbench-doc/{hash}/{hash}_page{N}.jpg`
 - DocumentQA — slidevqa: `slideVQA/{doc_dir}/{slide_name}-{N}-1024.jpg`（页码 N 为 slide 编号，1-based）
-- Summ: `gov-report/bg_pdf_img/gao-18-107/gao-18-107_page0.jpg`
+- VRAG: `infoseek/oven_04953036.jpg`（图像包暂未下载）
+- Summ: `gov-report/bg_pdf_img/gao-18-107/gao-18-107_page0.jpg`（图像包暂未下载）
 
 > **页码提取说明**：longdocurl 和 mmlongdoc 的图像文件名含标准 `_page{N}` 后缀；slidevqa 的图像文件名不含 `_page{N}`，而是以 `-{slide_num}-{resolution}.jpg` 格式嵌入 slide 编号。数据接入层（`DocumentQAAdapter._extract_page_number()`）统一处理两种模式，将 `ans_page_list` 中的页码映射到 `page_idx`（0-based）。
 
@@ -296,7 +296,7 @@ MMLongBench 是首个面向长上下文视觉语言模型（LCVLM）的综合性
 
 4. **ICL 任务不适用于本项目**：本质是图像分类而非文档检索，不纳入评测范围。
 
-5. **图像数据状态**：目前已有 VRAG（`1_vrag_image.tar.gz`）和 DocumentQA（`5_docqa_image.tar.gz`）的图像包。NIAH、ICL、Summ 的图像包尚未下载，Phase 2 主评测集 DocumentQA 不受影响。
+5. **图像数据状态**：目前仅保留 DocumentQA（`5_docqa_image.tar.gz`）的图像包。VRAG 图像包（`1_vrag_image.tar.gz`）已移除，NIAH、ICL、Summ 的图像包尚未下载。Phase 2 主评测集 DocumentQA 不受影响。
 
 ---
 

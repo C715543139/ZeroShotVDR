@@ -9,9 +9,9 @@ __pycache__/
 .vscode/
 .idea/
 
-# Data and outputs
-data/
-outputs/
+# Data and outputs (only top-level directories)
+/data/
+/outputs/
 models/
 .cache/
 
