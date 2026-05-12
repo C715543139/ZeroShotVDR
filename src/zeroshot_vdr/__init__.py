@@ -15,6 +15,14 @@ from zeroshot_vdr.retrieval import (
     batched_maxsim,
     maxsim_score,
 )
+from zeroshot_vdr.evaluation import (
+    GroundTruthLoader,
+    compute_all_metrics,
+    mrr,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+)
 
 __all__: list[str] = [
     "Page",
@@ -28,4 +36,10 @@ __all__: list[str] = [
     "RetrievalPipeline",
     "batched_maxsim",
     "maxsim_score",
+    "GroundTruthLoader",
+    "compute_all_metrics",
+    "mrr",
+    "ndcg_at_k",
+    "precision_at_k",
+    "recall_at_k",
 ]

@@ -846,8 +846,8 @@ class RetrievalPipeline:
 
 | 子步骤 | 内容                                                                                                                                                                          |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.4.1  | `ground_truth.py`：加载 MMLongBench 测试集标注，转为统一格式 `{query_id: set[page_id]}`。适配逻辑与指标计算分离，后续新增子集只需增加适配器                                   |
-| 2.4.2  | `metrics.py`：实现 4 项指标计算——**Recall@k**、**Precision@k**、**MRR**、**nDCG@k**。指标函数接受 `(retrieved_page_ids, relevant_page_ids, k)` 的标准化输入，与具体数据集解耦 |
+| 2.4.1  | `ground_truth.py`：当前实现通过 `DocumentQAAdapter.build_ground_truth()` 加载 DocumentQA 标注，并转为统一格式 `{query_id: set[page_id]}`。过滤入口为 `subtasks` / `lengths` / `task_family`，适配逻辑与指标计算分离 |
+| 2.4.2  | `metrics.py`：实现 4 项指标计算——**Recall@k**、**Precision@k**、**MRR**、**nDCG@k**。原子指标函数接受 `(retrieved_page_ids, relevant_page_ids, k)` 的标准化输入；批量聚合函数当前接受 `{query_id: [retrieved_page_id, ...]}` |
 | 2.4.3  | 编写批量评测脚本：遍历测试查询 → 检索 → 对比 ground truth                                                                                                                     |
 | 2.4.4  | 输出结果：CSV 汇总表 + JSON 详细结果                                                                                                                                          |
 
@@ -860,7 +860,17 @@ class RetrievalPipeline:
 | MRR         | Mean Reciprocal Rank：相关页面首次出现的倒数排名的均值 |
 | nDCG@k      | Normalized Discounted Cumulative Gain at k             |
 
-**预期 API**：
+> **v7 修订说明**：本节已根据 `src/zeroshot_vdr/evaluation/metrics.py` 与
+> `src/zeroshot_vdr/evaluation/ground_truth.py` 的真实实现同步更新。主要差异：
+> （1）`compute_all_metrics()` 当前接受 `dict[str, list[str]]`，而非
+> `dict[str, list[RetrievalResult]]`；（2）`GroundTruthLoader.load()` 当前使用
+> `subtasks` / `lengths` / `task_family` 过滤，而非 `subset` 单参数；
+> （3）当前实现未在 `GroundTruthLoader` 中暴露 `build_page_id()` /
+> `build_query_id()` 静态方法，而是直接复用 `DocumentQAAdapter` 的 ground-truth
+> 构建逻辑；（4）当前实现额外提供 `load_by_subtask()`、`load_by_length()` 与
+> `compute_metrics_by_group()` 便利接口。
+
+**当前实现 API**：
 
 ```python
 # src/zeroshot_vdr/evaluation/metrics.py
@@ -869,10 +879,41 @@ def precision_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: .
 def mrr(retrieved: list[str], relevant: set[str]) -> float: ...
 def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
 
+def compute_all_metrics(
+    retrieval_results: dict[str, list[str]],
+    ground_truth: dict[str, set[str]],
+    k_values: list[int] | None = None,
+) -> pd.DataFrame: ...
+# 返回列当前为 ['k', 'Recall', 'Precision', 'MRR', 'nDCG', 'n_queries']
+
+def compute_metrics_by_group(
+    retrieval_results: dict[str, list[str]],
+    ground_truth: dict[str, set[str]],
+    group_fn,
+    k_values: list[int] | None = None,
+) -> pd.DataFrame: ...
+
 # src/zeroshot_vdr/evaluation/ground_truth.py
 class GroundTruthLoader:
-    def __init__(self, config): ...
-    def load(self, subset: str | None = None) -> dict[str, set[str]]: ...
+    def __init__(self, config: dict | None = None): ...
+    def load(
+        self,
+        subtasks: list[str] | None = None,
+        lengths: list[str] | None = None,
+        task_family: str = "docqa",
+    ) -> dict[str, set[str]]: ...
+    def load_by_subtask(
+        self,
+        subtask: str,
+        lengths: list[str] | None = None,
+    ) -> dict[str, set[str]]: ...
+    def load_by_length(
+        self,
+        length: str,
+        subtasks: list[str] | None = None,
+    ) -> dict[str, set[str]]: ...
+    @property
+    def config(self) -> dict: ...
     # 返回 {query_id: {relevant_page_id, ...}}
 ```
 
@@ -1614,7 +1655,6 @@ class RetrievalPipeline:
 """
 
 import pandas as pd
-from zeroshot_vdr.contracts import RetrievalResult
 
 
 # -- 指标计算（metrics.py） --
@@ -1636,23 +1676,32 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float:
     ...
 
 def compute_all_metrics(
-    retrieval_results: dict[str, list[RetrievalResult]],
+    retrieval_results: dict[str, list[str]],
     ground_truth: dict[str, set[str]],
-    k_values: list[int] = [1, 3, 5, 10],
+    k_values: list[int] | None = None,
 ) -> pd.DataFrame:
     """
     批量计算全部指标。
 
     Parameters
     ----------
-    retrieval_results : {query_id: [RetrievalResult, ...]}
+    retrieval_results : {query_id: [retrieved_page_id, ...]}
     ground_truth : {query_id: {relevant_page_id, ...}}
-    k_values : list[int]
+    k_values : list[int] | None
 
     Returns
     -------
-    pd.DataFrame : columns=['k', 'Recall', 'Precision', 'MRR', 'nDCG']
+    pd.DataFrame : columns=['k', 'Recall', 'Precision', 'MRR', 'nDCG', 'n_queries']
     """
+    ...
+
+def compute_metrics_by_group(
+    retrieval_results: dict[str, list[str]],
+    ground_truth: dict[str, set[str]],
+    group_fn,
+    k_values: list[int] | None = None,
+) -> pd.DataFrame:
+    """按自定义分组维度（如子任务/长度档位）计算指标。"""
     ...
 
 
@@ -1668,16 +1717,26 @@ class GroundTruthLoader:
     3. page_id 使用与 PageCorpus 一致的命名规则
     """
 
-    def __init__(self, config: dict): ...
+    def __init__(self, config: dict | None = None): ...
 
-    def load(self, subset: str | None = None) -> dict[str, set[str]]:
+    def load(
+        self,
+        subtasks: list[str] | None = None,
+        lengths: list[str] | None = None,
+        task_family: str = "docqa",
+    ) -> dict[str, set[str]]:
         """
         加载 ground truth。
 
         Parameters
         ----------
-        subset : str | None
-            限定子集（docqa/icl/niah/summ/vrag）；None 表示全部。
+        subtasks : list[str] | None
+            限定子任务列表；None 时使用配置中的 `data.subtasks`。
+        lengths : list[str] | None
+            限定长度档位；None 时使用配置中的 `data.length`，若仍为空则回退到
+            `['K4', 'K8', 'K16', 'K32', 'K64', 'K128']`。
+        task_family : str
+            当前实现固定使用 `"docqa"`。
 
         Returns
         -------
@@ -1685,29 +1744,25 @@ class GroundTruthLoader:
         """
         ...
 
-    @staticmethod
-    def build_page_id(
-        task_family: str,
+    def load_by_subtask(
+        self,
         subtask: str,
-        length: str,
-        doc_id: str,
-        page_idx: int,
-    ) -> str:
-        """构造与 PageCorpus 一致的 page_id。
-
-        必须使用与 contracts.py 中 build_page_id() 完全一致的参数和格式。
-        Ground truth 侧不得使用比语料构建侧更弱的主键体系。
-        """
+        lengths: list[str] | None = None,
+    ) -> dict[str, set[str]]:
+        """加载单个子任务的 ground truth。"""
         ...
 
-    @staticmethod
-    def build_query_id(
-        task_family: str,
-        subtask: str,
+    def load_by_length(
+        self,
         length: str,
-        query_index: int,
-    ) -> str:
-        """构造与 PageCorpus 一致的 query_id。"""
+        subtasks: list[str] | None = None,
+    ) -> dict[str, set[str]]:
+        """加载单个长度档位的 ground truth。"""
+        ...
+
+    @property
+    def config(self) -> dict:
+        """返回当前使用的配置字典（只读）。"""
         ...
 ```
 
