@@ -290,11 +290,8 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 #### 安装 uv
 
 ```powershell
-# 方式一：pip（在 conda 环境中）
+# 在 conda 环境中
 pip install uv
-
-# 方式二：PowerShell 一键安装（全局）
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 #### 创建 pyproject.toml
