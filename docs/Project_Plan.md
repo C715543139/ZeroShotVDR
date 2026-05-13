@@ -110,17 +110,24 @@ ZeroShotVDR/
 ├── .cache/
 │   └── huggingface/               # 项目内 Hugging Face 缓存（模型/数据都放这里）
 │
-├── scripts/                       # 一键执行脚本
-│   ├── run_corpus_build.bat
-│   ├── run_index.bat
-│   ├── run_retrieval.bat
-│   └── run_eval.bat
+├── scripts/                       # 运行与验证脚本
+│   ├── env.ps1                    # 激活 conda + 项目 .venv
+│   ├── check_env.py               # 基础环境验证
+│   ├── test_model_load.py         # ColPali 模型加载验证
+│   ├── run_step3_eval.py          # Step 3.1 评测脚本（支持 stats-only / smoke / full run）
+│   └── run_step3_clean.py         # Step 3 清理脚本（支持 dry-run / 范围清理 / 全量清理）
 │
 ├── outputs/                       # 检索结果 & 评测报告（不纳入版本控制）
 │   ├── retrieval_results/
 │   │   └── results_top{k}.json    # 各 k 值的检索结果
 │   └── eval_reports/
-│       └── metrics_summary.csv    # 评测指标汇总
+│       └── {run_name}/
+│           ├── metrics_summary.csv
+│           ├── metrics_overall.csv
+│           ├── metrics_by_subtask.csv
+│           ├── metrics_by_length.csv
+│           ├── retrieval_details.json
+│           └── run_summary.json
 │
 ├── docs/                          # 文档
 │   ├── NJUProject_VDR.md          # 课程任务说明
@@ -131,7 +138,10 @@ ZeroShotVDR/
 │       ├── core_module_revision_v2.md
 │       ├── core_module_revision_v3.md
 │       ├── core_module_revision_v4.md
-│       └── core_module_revision_v5.md
+│       ├── core_module_revision_v5.md
+│       ├── core_module_revision_v6.md
+│       ├── core_module_revision_v7.md
+│       └── step3_eval_revision_v1.md
 │
 ├── pyproject.toml                 # uv 原生项目配置
 ├── uv.lock                        # 依赖锁定文件
@@ -573,9 +583,23 @@ data/MMLongBench/
 
 ---
 
-### 2.7 环境验证脚本
+### 2.7 环境验证与运行脚本
 
-项目提供两个验证脚本，均位于 `scripts/` 目录下。脚本的**唯一权威版本**以实际文件为准，下方仅作功能说明。
+项目当前提供 5 个常用脚本，均位于 `scripts/` 目录下。脚本的**唯一权威版本**以实际文件为准，下方仅作功能说明。
+
+#### `scripts/env.ps1` —— 评测前环境激活入口
+
+所有评测命令执行前，先从项目根目录运行：
+
+```powershell
+. .\scripts\env.ps1
+```
+
+当前脚本会优先尝试激活 `zeroshotvdr` conda 环境；若当前 PowerShell 未初始化 conda shell hook，则会给出 warning 并继续激活项目 `.venv`。这能保证：
+
+- 优先使用项目本地解释器 `.venv\Scripts\python.exe`
+- `sitecustomize.py` 能在项目根目录下自动生效
+- 后续 `check_env.py` / `test_model_load.py` / `run_step3_eval.py` 的运行方式保持一致
 
 #### `scripts/check_env.py` —— 基础环境验证
 
@@ -605,6 +629,73 @@ data/MMLongBench/
 | 显存报告           | 输出当前 CUDA 显存分配/缓存情况                                                                |
 
 运行方式：从项目根目录执行 `python scripts/test_model_load.py`，预期输出"模型验证全部通过"。
+
+#### `scripts/run_step3_eval.py` —— Step 3.1 页级检索评测
+
+该脚本用于运行 DocumentQA 的文档内页级检索评测，支持三种模式：
+
+| 模式       | 用途                       | 典型参数                                       |
+| ---------- | -------------------------- | ---------------------------------------------- |
+| 统计模式   | 仅收集数据规模，不加载模型 | `--stats-only`                                 |
+| smoke test | 小样本局部评测             | `--subtasks ... --lengths ... --max-queries N` |
+| full run   | 全量评测并自动补建缺失索引 | 无 `--max-queries`，默认评测主集               |
+
+脚本行为约束：
+
+- 强制设置项目内 Hugging Face 缓存目录（`HF_HOME` / `HF_HUB_CACHE` / `HF_DATASETS_CACHE`）
+- 强制离线模式（`HF_HUB_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`）
+- 若索引中缺少当前评测范围的页面，则自动增量补建该范围所需页面
+- 输出按 run_name 分目录落盘到 `outputs/eval_reports/{run_name}/`
+
+运行示例：
+
+```powershell
+# 仅统计全量规模
+. .\scripts\env.ps1
+python scripts/run_step3_eval.py --stats-only --run-name full_scope_stats
+
+# 本机 smoke test
+. .\scripts\env.ps1
+python scripts/run_step3_eval.py --subtasks longdocurl --lengths K4 --max-queries 5 --page-batch-size 1 --score-batch-size 8 --run-name smoke_eval_longdocurl_K4_q5
+
+# 强设备全量评测
+. .\scripts\env.ps1
+python scripts/run_step3_eval.py --run-name step3_docqa_full
+```
+
+#### `scripts/run_step3_clean.py` —— Step 3 清理脚本
+
+该脚本用于清理 Step 3 产出的评测结果目录，以及按子任务/长度范围匹配的索引页面文件。默认仅做预览，不会真正删除；需要显式传入 `--yes` 才执行删除。
+
+脚本支持 3 种清理方式：
+
+| 方式          | 作用                                                                           | 典型参数                                  |
+| ------------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
+| 精确 run 清理 | 清理指定 `run_name` 的输出目录，并可从其 `run_summary.json` 反推出对应索引范围 | `--run-names smoke_eval_longdocurl_K4_q5` |
+| 范围清理      | 按 `subtasks × lengths` 清理输出目录与索引页                                   | `--subtasks slidevqa --lengths K32`       |
+| 全量清理      | 清理全部 Step 3 输出目录，并删除索引中的全部 docqa 页面                        | `--all`                                   |
+
+脚本行为约束：
+
+- 默认仅打印清理计划；未传 `--yes` 时不会实际删除
+- 若未显式指定 `--clean-outputs` / `--clean-index`，默认同时预览两者
+- 对索引的范围清理会同步重写 `page_ids.json`，并更新 `index_meta.json` 中的 `num_pages`
+
+运行示例：
+
+```powershell
+# 预览：按 run_name 清理 smoke test 的输出和索引页
+. .\scripts\env.ps1
+python scripts/run_step3_clean.py --run-names smoke_eval_longdocurl_K4_q5 --clean-outputs --clean-index --dry-run
+
+# 实际清理：删除 slidevqa/K32 对应的 Step 3 输出和索引页
+. .\scripts\env.ps1
+python scripts/run_step3_clean.py --subtasks slidevqa --lengths K32 --clean-outputs --clean-index --yes
+
+# 实际清理全部 Step 3 产物
+. .\scripts\env.ps1
+python scripts/run_step3_clean.py --all --yes
+```
 
 ---
 
@@ -771,14 +862,14 @@ class IndexStore:
 
 **文件**：`src/zeroshot_vdr/retrieval/encoder.py`, `src/zeroshot_vdr/retrieval/scoring.py`, `src/zeroshot_vdr/retrieval/pipeline.py`
 
-| 子步骤 | 内容                                                                                                                                                                                                                                                       |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）。当前实现中的 `QueryEncoder` 需要 `model + processor`，并额外提供 `from_pretrained()` / `from_page_encoder()` / `encode_batch()` 作为便利构造与批量接口。 |
-| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。当前默认 `Sim` 为 **L2 归一化后的点积**（等价于余弦相似度），独立为 `scoring.py`，便于后续替换或扩展打分函数。                                                      |
-| 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                            |
+| 子步骤 | 内容                                                                                                                                                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）。当前实现中的 `QueryEncoder` 需要 `model + processor`，并额外提供 `from_pretrained()` / `from_page_encoder()` / `encode_batch()` 作为便利构造与批量接口。                                                                                            |
+| 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。当前默认 `Sim` 为 **L2 归一化后的点积**（等价于余弦相似度），独立为 `scoring.py`，便于后续替换或扩展打分函数。                                                                                                                                           |
+| 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                                                                                                             |
 | 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象；仅当 `candidate_ids is None` 时，候选召回才默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料）。若显式传入 `candidate_ids=[]`，当前实现会将其视为**空候选集**并直接返回空结果。 |
-| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(query_id, page_id, score, rank)]`                                                                                                                                                                    |
-| 2.3.6  | 记录查询耗时。当前实现会在 `retrieve()` 内统计**单次查询耗时**并输出 debug 日志；并未在检索层维护公共的“平均延迟”累积状态，后续若需平均值，应在评测/实验层聚合。                                                                                          |
+| 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(query_id, page_id, score, rank)]`                                                                                                                                                                                                                                                     |
+| 2.3.6  | 记录查询耗时。当前实现会在 `retrieve()` 内统计**单次查询耗时**并输出 debug 日志；并未在检索层维护公共的“平均延迟”累积状态，后续若需平均值，应在评测/实验层聚合。                                                                                                                                                                            |
 
 **MaxSim 公式**：
 
@@ -841,12 +932,12 @@ class RetrievalPipeline:
 
 **文件**：`src/zeroshot_vdr/evaluation/metrics.py`, `src/zeroshot_vdr/evaluation/ground_truth.py`
 
-| 子步骤 | 内容                                                                                                                                                                          |
-| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.4.1  | `ground_truth.py`：当前实现通过 `DocumentQAAdapter.build_ground_truth()` 加载 DocumentQA 标注，并转为统一格式 `{query_id: set[page_id]}`。过滤入口为 `subtasks` / `lengths` / `task_family`，适配逻辑与指标计算分离 |
+| 子步骤 | 内容                                                                                                                                                                                                                         |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.4.1  | `ground_truth.py`：当前实现通过 `DocumentQAAdapter.build_ground_truth()` 加载 DocumentQA 标注，并转为统一格式 `{query_id: set[page_id]}`。过滤入口为 `subtasks` / `lengths` / `task_family`，适配逻辑与指标计算分离          |
 | 2.4.2  | `metrics.py`：实现 4 项指标计算——**Recall@k**、**Precision@k**、**MRR**、**nDCG@k**。原子指标函数接受 `(retrieved_page_ids, relevant_page_ids, k)` 的标准化输入；批量聚合函数当前接受 `{query_id: [retrieved_page_id, ...]}` |
-| 2.4.3  | 编写批量评测脚本：遍历测试查询 → 检索 → 对比 ground truth                                                                                                                     |
-| 2.4.4  | 输出结果：CSV 汇总表 + JSON 详细结果                                                                                                                                          |
+| 2.4.3  | 编写批量评测脚本：遍历测试查询 → 检索 → 对比 ground truth                                                                                                                                                                    |
+| 2.4.4  | 输出结果：CSV 汇总表 + JSON 详细结果                                                                                                                                                                                         |
 
 **指标定义**：
 
@@ -922,7 +1013,7 @@ class GroundTruthLoader:
 - [ ] `src/zeroshot_vdr/retrieval/`：流水线式检索，查询→Top-k 结果端到端
 - [ ] `src/zeroshot_vdr/evaluation/`：四项指标计算，与数据集解耦
 - [ ] `config/default.yaml`：全局配置（数据/模型/索引/检索/评测参数全覆盖）
-- [ ] `scripts/` 下各 bat 脚本可用
+- [ ] `scripts/` 下环境激活、验证与评测脚本可用
 
 ---
 
@@ -941,6 +1032,29 @@ class GroundTruthLoader:
 - [ ] 以 K32 为主档位汇报汇总表，同时提供跨档位趋势图
 - [ ] 记录效率指标：索引构建时间、索引文件大小、单次检索延迟
 
+**当前实现状态（2026-05-13 同步）**：
+
+- Step 3.1 已有可执行脚本：`scripts/run_step3_eval.py`
+- Step 3 清理入口已补齐：`scripts/run_step3_clean.py`
+- 脚本默认遵循文档内检索协议，并以项目内缓存 + Hugging Face offline 模式运行
+- 支持 `--stats-only`、`--max-queries`、`--query-offset`、`--skip-index-build`，适合弱设备先做局部验证
+- 清理脚本支持 `--run-names`、`--subtasks`、`--lengths` 与 `--all`，默认 dry-run 预览，适合在重跑前清理旧结果与局部索引
+- 当前输出会按 run_name 写入 `outputs/eval_reports/{run_name}/`，其中 `metrics_summary.csv` 为汇总表，`run_summary.json` 记录范围统计与性能指标
+
+**本机时间估算（Windows 10 + RTX 4060 Laptop 8GB，保守按 `--page-batch-size 1 --score-batch-size 8`）**：
+
+- 已统计的全量主评测范围：15,577 queries，3,653 docs，117,724 pages；当前索引外仍需编码 117,704 pages
+- `longdocurl/K4` smoke test（5 queries，20 pages）实测平均单查询延迟约 **0.184 s/query**，该样本平均候选页数为 4.4
+- 已完成的 `slidevqa/K32` 代表性基准（5 queries，71 pages，平均 36.4 candidates/query）结果为：
+  - 索引补建 **240.45 s / 71 pages ≈ 3.39 s/page**
+  - 检索阶段平均 **0.156 s/query**
+- 以该代表性基准外推：
+  - 全量索引补建约 **110.7 小时**
+  - 全量检索约 **0.7 小时**
+- 合并模型加载、结果落盘与少量 I/O 波动后，本机完整 Step 3.1 全量评测的现实估算为 **110–115 小时（约 4.6–4.8 天）**
+
+> 说明：上述时间估算以“当前已验证稳定”的保守配置为基线。若更高 `page_batch_size` 在本机长期稳定不 OOM，则总时长可能下降；但在未完成整轮实测前，不作为主估算写入计划。
+
 #### Step 3.2 结果分析
 
 - [ ] 绘制 k vs 指标曲线（Recall@k, Precision@k, nDCG@k）
@@ -954,7 +1068,8 @@ class GroundTruthLoader:
 
 #### Phase 3 产出
 
-- [ ] `outputs/eval_reports/metrics_summary.csv`（含子任务×档位的完整结果）
+- [ ] `outputs/eval_reports/{run_name}/metrics_summary.csv`（含子任务×档位的完整结果）
+- [ ] `outputs/eval_reports/{run_name}/run_summary.json`（记录规模统计、索引状态与性能指标）
 - [ ] Bad Cases 分析笔记
 - [ ] Milestone 报告草稿
 
@@ -1890,12 +2005,12 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 **当前为 baseline 提供的便利实现**（Phase 4 可替换或增强）：
 
-| 便利实现                                                    | Phase 4 的可能变化                                          |
-| ----------------------------------------------------------- | ----------------------------------------------------------- |
-| `IndexStore.read_stacked()` 返回全量 stacked tensor         | 变长 patch 时不可用，需改用 `iter_pages()`；不影响核心抽象  |
-| `RetrievalPipeline.generate_candidates()` 默认文档内候选    | Phase 4B 替换为均值池化粗筛；全局检索需显式配置             |
+| 便利实现                                                    | Phase 4 的可能变化                                                                                        |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `IndexStore.read_stacked()` 返回全量 stacked tensor         | 变长 patch 时不可用，需改用 `iter_pages()`；不影响核心抽象                                                |
+| `RetrievalPipeline.generate_candidates()` 默认文档内候选    | Phase 4B 替换为均值池化粗筛；全局检索需显式配置                                                           |
 | `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | 当前实现已提供 `batched_maxsim_variable()` 作为逐页回退路径；Phase 4A 后也可继续演进为 padding / 分桶策略 |
-| `RetrievalPipeline.retrieve_text()` 纯文本便利包装          | 不承担 baseline 默认协议；调用方需显式提供 candidate_ids    |
+| `RetrievalPipeline.retrieve_text()` 纯文本便利包装          | 不承担 baseline 默认协议；调用方需显式提供 candidate_ids                                                  |
 
 这一区分的关键作用：当 Phase 4 需要改动某处时，可以先判断该处属于"核心抽象"还是"便利实现"，避免在核心抽象上做破坏性修改。
 

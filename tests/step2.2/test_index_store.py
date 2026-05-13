@@ -51,6 +51,7 @@ DIM = 128
 
 PAGE_ID_A0 = "docqa/longdocurl_K4/doc001/p0"
 PAGE_ID_A1 = "docqa/longdocurl_K4/doc001/p1"
+PAGE_ID_A0_K8 = "docqa/longdocurl_K8/doc001/p0"
 PAGE_ID_B0 = "docqa/longdocurl_K4/doc002/p0"
 PAGE_ID_C0 = "docqa/mmlongdoc_K4/doc003/p0"
 
@@ -171,6 +172,29 @@ class TestListPageIds:
         assert set(populated_store.list_page_ids()) == set(
             populated_store.list_page_ids(doc_id=None)
         )
+
+    def test_filter_by_length_excludes_same_doc_other_lengths(self, populated_store):
+        populated_store.write_page(PAGE_ID_A0_K8, _emb(100))
+
+        result = populated_store.list_page_ids(
+            doc_id="doc001",
+            task_family="docqa",
+            subtask="longdocurl",
+            length="K4",
+        )
+
+        assert set(result) == {PAGE_ID_A0, PAGE_ID_A1}
+
+    def test_filter_by_subtask_and_length_without_doc_id(self, populated_store):
+        populated_store.write_page(PAGE_ID_A0_K8, _emb(101))
+
+        result = populated_store.list_page_ids(
+            task_family="docqa",
+            subtask="longdocurl",
+            length="K8",
+        )
+
+        assert result == [PAGE_ID_A0_K8]
 
 
 # ===========================================================================

@@ -36,6 +36,8 @@ def maxsim_score(
     torch.Tensor
         标量 score
     """
+    query_emb, page_emb = _align_similarity_dtypes(query_emb, page_emb)
+
     if norm:
         query_emb = _l2_normalize(query_emb)
         page_emb = _l2_normalize(page_emb)
@@ -72,6 +74,8 @@ def batched_maxsim(
     torch.Tensor
         shape ``[batch]``，每个页面一个 score
     """
+    query_emb, pages_emb = _align_similarity_dtypes(query_emb, pages_emb)
+
     if norm:
         query_emb = _l2_normalize(query_emb)
         pages_emb = _l2_normalize(pages_emb)
@@ -114,9 +118,11 @@ def batched_maxsim_variable(
 
     scores: list[float] = []
     for page_emb in pages_list:
+        aligned_query, aligned_page = _align_similarity_dtypes(query_emb, page_emb)
         if norm:
-            page_emb = _l2_normalize(page_emb)
-        sim = query_emb @ page_emb.T  # [n_tokens, n_patches_i]
+            aligned_query = _l2_normalize(aligned_query)
+            aligned_page = _l2_normalize(aligned_page)
+        sim = aligned_query @ aligned_page.T  # [n_tokens, n_patches_i]
         scores.append(sim.max(dim=-1).values.sum().item())
 
     return torch.tensor(scores, dtype=torch.float32)
@@ -143,3 +149,22 @@ def _l2_normalize(x: torch.Tensor) -> torch.Tensor:
     # 避免除零
     norm = norm.clamp(min=1e-12)
     return x / norm
+
+
+def _align_similarity_dtypes(
+    query_emb: torch.Tensor,
+    page_emb: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """为相似度计算对齐 dtype。
+
+    页面向量常以 float16 落盘，查询向量则可能来自 bfloat16 推理。
+    在 Windows/CPU 侧做 MaxSim 时，两者必须先提升到同一 dtype。
+    """
+    common_dtype = torch.promote_types(query_emb.dtype, page_emb.dtype)
+
+    if query_emb.dtype != common_dtype:
+        query_emb = query_emb.to(common_dtype)
+    if page_emb.dtype != common_dtype:
+        page_emb = page_emb.to(common_dtype)
+
+    return query_emb, page_emb

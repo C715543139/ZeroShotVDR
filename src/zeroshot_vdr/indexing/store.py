@@ -163,24 +163,74 @@ class IndexStore:
             except FileNotFoundError:
                 logger.warning("索引文件缺失，跳过: %s", pid)
 
-    def list_page_ids(self, doc_id: str | None = None) -> list[str]:
+    @staticmethod
+    def _split_page_id(page_id: str) -> tuple[str, str, str, str] | None:
+        """解析 page_id 的层级字段。
+
+        page_id 规范格式为 ``{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}``。
+        若格式不符合预期，返回 None。
+        """
+        parts = page_id.split("/")
+        if len(parts) != 4:
+            return None
+
+        task_family, subtask_length, doc_id, page_part = parts
+        if "_" not in subtask_length:
+            return None
+
+        subtask, length = subtask_length.rsplit("_", 1)
+        return task_family, subtask, length, doc_id
+
+    def list_page_ids(
+        self,
+        doc_id: str | None = None,
+        task_family: str | None = None,
+        subtask: str | None = None,
+        length: str | None = None,
+    ) -> list[str]:
         """列出索引中的页面 ID。
 
         Parameters
         ----------
         doc_id : str | None
-            限定文档；None 表示全部页面。
-            page_id 格式为 ``{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}``，
-            筛选逻辑为检查 doc_id 是否出现在 page_id 中。
+            限定文档；None 表示不按文档过滤。
+        task_family : str | None
+            限定任务族；None 表示不按任务族过滤。
+        subtask : str | None
+            限定子任务；None 表示不按子任务过滤。
+        length : str | None
+            限定长度档位；None 表示不按长度过滤。
+
+        Returns
+        -------
+        list[str]
+            满足所有过滤条件的 page_id 列表。
         """
         ids = self._load_page_ids()
-        if doc_id is None:
+        if all(value is None for value in (doc_id, task_family, subtask, length)):
             return list(ids)
 
-        # page_id 格式: .../{doc_id}/p{page_idx}
-        # 安全匹配：doc_id 前后必须有 "/"
-        marker = f"/{doc_id}/"
-        return [pid for pid in ids if marker in pid]
+        filtered: list[str] = []
+        for pid in ids:
+            parsed = self._split_page_id(pid)
+            if parsed is None:
+                logger.warning("无法解析 page_id，跳过过滤匹配: %s", pid)
+                continue
+
+            pid_task_family, pid_subtask, pid_length, pid_doc_id = parsed
+
+            if task_family is not None and pid_task_family != task_family:
+                continue
+            if subtask is not None and pid_subtask != subtask:
+                continue
+            if length is not None and pid_length != length:
+                continue
+            if doc_id is not None and pid_doc_id != doc_id:
+                continue
+
+            filtered.append(pid)
+
+        return filtered
 
     # ------------------------------------------------------------------
     # 视图接口

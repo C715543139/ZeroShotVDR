@@ -30,6 +30,7 @@ from zeroshot_vdr.contracts import RetrievalResult
 PAGE_ID_A0 = "docqa/longdocurl_K4/doc001/p0"
 PAGE_ID_A1 = "docqa/longdocurl_K4/doc001/p1"
 PAGE_ID_A2 = "docqa/longdocurl_K4/doc001/p2"
+PAGE_ID_A0_K8 = "docqa/longdocurl_K8/doc001/p0"
 PAGE_ID_B0 = "docqa/longdocurl_K4/doc002/p0"
 
 
@@ -48,6 +49,13 @@ class TestGenerateCandidates:
     def test_default_scope_contains_no_cross_document_pages(self, pipeline, sample_query, query_embedding):
         candidates = pipeline.generate_candidates(sample_query, query_embedding)
         assert PAGE_ID_B0 not in candidates
+
+    def test_default_scope_excludes_same_doc_other_lengths(self, pipeline, sample_query, query_embedding):
+        pipeline.index_store.write_page(PAGE_ID_A0_K8, torch.zeros(2, 4))
+
+        candidates = pipeline.generate_candidates(sample_query, query_embedding)
+
+        assert PAGE_ID_A0_K8 not in candidates
 
     def test_unknown_doc_id_produces_empty_candidates(self, pipeline, query_embedding):
         from zeroshot_vdr.contracts import Query

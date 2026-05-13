@@ -144,3 +144,16 @@ class TestBatchedMaxSim:
         assert scores[1].item() == pytest.approx(2.0, abs=1e-5)
         assert scores[2].item() == pytest.approx(0.0, abs=1e-5)
 
+    def test_mixed_precision_inputs_are_supported(self):
+        pages = torch.stack([
+            _perfect_page(),
+            _partial_page(),
+        ]).to(torch.float16)
+        query = _query().to(torch.bfloat16)
+
+        scores = batched_maxsim(query, pages)
+
+        assert scores.shape == (2,)
+        assert scores[0].item() == pytest.approx(2.0, abs=1e-5)
+        assert scores[1].item() == pytest.approx(1.0, abs=1e-5)
+

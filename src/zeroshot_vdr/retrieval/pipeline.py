@@ -157,7 +157,12 @@ class RetrievalPipeline:
 
         if strategy == "full":
             # Baseline: 文档内全部页面
-            candidates = self._index_store.list_page_ids(doc_id=query.doc_id)
+            candidates = self._index_store.list_page_ids(
+                doc_id=query.doc_id,
+                task_family=query.task_family,
+                subtask=query.subtask,
+                length=query.length,
+            )
             logger.debug(
                 "候选召回 (full): doc_id=%s → %d 候选页面",
                 query.doc_id, len(candidates),
@@ -187,7 +192,12 @@ class RetrievalPipeline:
             top_n = 50  # 默认 top-50
 
         # 获取文档内页面的均值池化视图
-        doc_page_ids = self._index_store.list_page_ids(doc_id=query.doc_id)
+        doc_page_ids = self._index_store.list_page_ids(
+            doc_id=query.doc_id,
+            task_family=query.task_family,
+            subtask=query.subtask,
+            length=query.length,
+        )
         pooled, pids = self._index_store.get_mean_pooled_view(doc_page_ids)
 
         if pooled.numel() == 0:
