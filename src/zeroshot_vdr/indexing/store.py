@@ -164,6 +164,39 @@ class IndexStore:
         """批量注册已存在于磁盘中的页面 ID。"""
         self._append_page_ids(page_ids)
 
+    def has_page(self, page_id: str) -> bool:
+        """检查某个 page_id 对应的索引文件是否已存在。"""
+        return self._page_path(page_id).exists()
+
+    def recover_page_ids(self, candidate_page_ids: list[str]) -> int:
+        """从已存在的页面文件中恢复缺失的 page_ids 清单。
+
+        典型场景是多进程索引构建时，页面文件已写盘，但父进程在
+        统一落盘 ``page_ids.json`` 之前被中断。
+
+        Parameters
+        ----------
+        candidate_page_ids : list[str]
+            可能已存在于磁盘上的 page_id 候选列表。
+
+        Returns
+        -------
+        int
+            本次新恢复并写入 manifest 的 page_id 数量。
+        """
+        existing_ids = set(self._load_page_ids())
+        recovered = [
+            page_id
+            for page_id in candidate_page_ids
+            if page_id not in existing_ids and self.has_page(page_id)
+        ]
+
+        if not recovered:
+            return 0
+
+        self._append_page_ids(recovered)
+        return len(recovered)
+
     # ------------------------------------------------------------------
     # 核心读取接口
     # ------------------------------------------------------------------

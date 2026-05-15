@@ -414,6 +414,30 @@ class TestMetadataFiles:
 
 
 # ===========================================================================
+# Manifest recovery after interrupted indexing
+# ===========================================================================
+
+
+class TestManifestRecovery:
+    def test_recover_page_ids_restores_existing_files(self, index_dir, emb_a0, emb_b0):
+        store = IndexStore(str(index_dir))
+        store.write_page(PAGE_ID_A0, emb_a0, update_manifest=False)
+        store.write_page(PAGE_ID_B0, emb_b0, update_manifest=False)
+
+        recovered = store.recover_page_ids([PAGE_ID_A0, PAGE_ID_B0, PAGE_ID_C0])
+
+        assert recovered == 2
+        assert set(store.list_page_ids()) == {PAGE_ID_A0, PAGE_ID_B0}
+
+    def test_recover_page_ids_is_idempotent(self, index_dir, emb_a0):
+        store = IndexStore(str(index_dir))
+        store.write_page(PAGE_ID_A0, emb_a0, update_manifest=False)
+
+        assert store.recover_page_ids([PAGE_ID_A0]) == 1
+        assert store.recover_page_ids([PAGE_ID_A0]) == 0
+
+
+# ===========================================================================
 # Persistence — data survives a fresh IndexStore from the same directory
 # ===========================================================================
 

@@ -576,6 +576,13 @@ def main() -> int:
     )
 
     store = IndexStore(str(index_dir))
+    recovered_page_count = store.recover_page_ids([page.page_id for page in required_pages])
+    if recovered_page_count:
+        logger.info(
+            "检测到上次中断遗留的 %d 页索引文件，已恢复到 page_ids.json",
+            recovered_page_count,
+        )
+
     existing_page_ids = set(store.list_page_ids())
     existing_total_pages_before = len(existing_page_ids)
     missing_pages = [page for page in required_pages if page.page_id not in existing_page_ids]
@@ -605,6 +612,7 @@ def main() -> int:
         "scope_stats": scope_stats,
         "index": {
             "existing_total_pages_before": existing_total_pages_before,
+            "recovered_pages_before_resume": recovered_page_count,
             "missing_scope_pages": len(missing_pages),
             "skip_index_build": args.skip_index_build,
         },
