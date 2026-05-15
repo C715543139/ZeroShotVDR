@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -24,6 +25,7 @@ os.environ.setdefault(
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -110,16 +112,22 @@ def parse_args() -> argparse.Namespace:
         help="覆盖模型设备，如 cuda:0 或 cpu",
     )
     parser.add_argument(
+        "--index-devices",
+        nargs="+",
+        default=None,
+        help="索引构建使用的设备列表；默认自动使用全部可见 CUDA 设备",
+    )
+    parser.add_argument(
         "--page-batch-size",
         type=int,
         default=None,
-        help="页面编码 batch size，默认读取配置中的 index.batch_size",
+        help="页面编码 batch size；未显式指定时按设备显存自动调优",
     )
     parser.add_argument(
         "--score-batch-size",
         type=int,
         default=None,
-        help="MaxSim 评分 batch size，默认读取配置中的 retrieval.score_batch_size",
+        help="MaxSim 评分 batch size；未显式指定时按检索设备自动调优",
     )
     parser.add_argument(
         "--skip-index-build",
@@ -334,12 +342,15 @@ def _load_page_encoder(
     model_cfg: dict[str, Any],
     index_cfg: dict[str, Any],
     args: argparse.Namespace,
+    *,
+    device: str | None = None,
+    batch_size: int | None = None,
 ):
     model_repo = model_cfg.get("repo", "vidore/colpali-v1.3")
     base_repo = model_cfg.get("base_repo", "vidore/colpaligemma-3b-pt-448-base")
-    device = args.device or model_cfg.get("device", "cuda:0")
+    device = device or args.device or model_cfg.get("device", "cuda:0")
     dtype = _parse_torch_dtype(model_cfg.get("dtype"))
-    batch_size = args.page_batch_size or index_cfg.get("batch_size", 4)
+    batch_size = batch_size or args.page_batch_size or index_cfg.get("batch_size", 4)
     storage_dtype = _parse_torch_dtype(index_cfg.get("storage_dtype", "float16"))
 
     try:
@@ -355,6 +366,124 @@ def _load_page_encoder(
         raise RuntimeError(
             "加载 ColPali 模型失败。请先确认项目内缓存完整，并可先运行 scripts/test_model_load.py 验证。"
         ) from exc
+
+
+def _list_visible_cuda_devices() -> list[str]:
+    try:
+        import torch
+    except Exception:
+        return []
+
+    if not torch.cuda.is_available():
+        return []
+    return [f"cuda:{idx}" for idx in range(torch.cuda.device_count())]
+
+
+def _resolve_index_devices(args: argparse.Namespace, default_device: str) -> list[str]:
+    if args.index_devices:
+        return args.index_devices
+
+    if not default_device.startswith("cuda"):
+        return [default_device]
+
+    visible_devices = _list_visible_cuda_devices()
+    return visible_devices or [default_device]
+
+
+def _get_device_memory_gb(device: str) -> float:
+    if not device.startswith("cuda"):
+        return 0.0
+
+    try:
+        import torch
+    except Exception:
+        return 0.0
+
+    if not torch.cuda.is_available():
+        return 0.0
+
+    if ":" in device:
+        _, raw_index = device.split(":", 1)
+        device_index = int(raw_index)
+    else:
+        device_index = 0
+
+    props = torch.cuda.get_device_properties(device_index)
+    return props.total_memory / (1024**3)
+
+
+def _recommend_page_batch_size(explicit_value: int | None, index_devices: list[str]) -> int:
+    if explicit_value is not None:
+        return explicit_value
+
+    if not index_devices:
+        return 4
+
+    min_memory_gb = min(_get_device_memory_gb(device) for device in index_devices)
+    if min_memory_gb >= 22:
+        return 4
+    if min_memory_gb >= 14:
+        return 3
+    return 4
+
+
+def _recommend_score_batch_size(explicit_value: int | None, retrieval_device: str) -> int:
+    if explicit_value is not None:
+        return explicit_value
+
+    memory_gb = _get_device_memory_gb(retrieval_device)
+    if memory_gb >= 22:
+        return 512
+    if memory_gb >= 14:
+        return 256
+    return 64
+
+
+def _split_pages_for_devices(pages: list[Any], devices: list[str]) -> list[tuple[str, list[Any]]]:
+    if not devices:
+        return []
+
+    shards: list[list[Any]] = [[] for _ in devices]
+    for index, page in enumerate(pages):
+        shards[index % len(devices)].append(page)
+
+    return [
+        (device, shard)
+        for device, shard in zip(devices, shards)
+        if shard
+    ]
+
+
+def _encode_pages_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    device = payload["device"]
+    pages = payload["pages"]
+    if not pages:
+        return {"device": device, "encoded_pages": 0}
+
+    model_cfg = payload["model_cfg"]
+    dtype = _parse_torch_dtype(model_cfg.get("dtype"))
+    storage_dtype = _parse_torch_dtype(payload["storage_dtype"])
+
+    encoder = PageEncoder.from_pretrained(
+        model_repo=model_cfg.get("repo", "vidore/colpali-v1.3"),
+        base_repo=model_cfg.get("base_repo", "vidore/colpaligemma-3b-pt-448-base"),
+        device=device,
+        dtype=dtype,
+        batch_size=payload["page_batch_size"],
+        storage_dtype=storage_dtype,
+    )
+    store = IndexStore(payload["index_dir"])
+    encoder.encode_corpus(
+        pages,
+        store,
+        show_progress=False,
+        resume=False,
+        update_manifest=False,
+    )
+    return {
+        "device": device,
+        "encoded_pages": len(pages),
+    }
 
 
 def main() -> int:
@@ -374,8 +503,13 @@ def main() -> int:
     k_values = _resolve_k_values(args, evaluation_cfg)
     max_k = max(k_values)
 
-    if args.score_batch_size is not None:
-        retrieval_cfg["score_batch_size"] = args.score_batch_size
+    retrieval_device = args.device or model_cfg.get("device", "cuda:0")
+    index_devices = _resolve_index_devices(args, retrieval_device)
+    page_batch_size = _recommend_page_batch_size(args.page_batch_size, index_devices)
+    retrieval_cfg["score_batch_size"] = _recommend_score_batch_size(
+        args.score_batch_size,
+        retrieval_device,
+    )
 
     data_dir = resolve_path(data_cfg.get("root_dir", "data/MMLongBench/raw"))
     index_dir = resolve_path(args.index_dir or index_cfg.get("dir", "data/processed/index"))
@@ -389,6 +523,13 @@ def main() -> int:
     logger.info("Step 3.1 评测开始: subtasks=%s lengths=%s", subtasks, lengths)
     logger.info("HuggingFace 离线模式: HF_HUB_OFFLINE=%s", os.environ.get("HF_HUB_OFFLINE"))
     logger.info("输出目录: %s", run_dir)
+    logger.info(
+        "运行参数: retrieval_device=%s index_devices=%s page_batch_size=%d score_batch_size=%d",
+        retrieval_device,
+        index_devices,
+        page_batch_size,
+        retrieval_cfg["score_batch_size"],
+    )
 
     adapter = DocumentQAAdapter(
         data_dir=str(data_dir),
@@ -470,8 +611,15 @@ def main() -> int:
         "model": {
             "repo": model_cfg.get("repo"),
             "base_repo": model_cfg.get("base_repo"),
-            "device": args.device or model_cfg.get("device"),
+            "device": retrieval_device,
             "dtype": model_cfg.get("dtype"),
+        },
+        "runtime": {
+            "retrieval_device": retrieval_device,
+            "index_devices": index_devices,
+            "page_batch_size": page_batch_size,
+            "score_batch_size": retrieval_cfg["score_batch_size"],
+            "multi_gpu_index": len(index_devices) > 1,
         },
     }
 
@@ -486,17 +634,61 @@ def main() -> int:
             f"索引中缺少当前评测范围的 {len(missing_pages)} 页，且指定了 --skip-index-build。"
         )
 
-    page_encoder = _load_page_encoder(model_cfg, index_cfg, args)
+    page_encoder = None
 
     index_build_start = time.perf_counter()
     if missing_pages:
         logger.info("开始补建索引: %d 页", len(missing_pages))
-        page_encoder.encode_corpus(missing_pages, store, show_progress=True, resume=True)
+        if len(index_devices) == 1:
+            page_encoder = _load_page_encoder(
+                model_cfg,
+                index_cfg,
+                args,
+                device=index_devices[0],
+                batch_size=page_batch_size,
+            )
+            page_encoder.encode_corpus(missing_pages, store, show_progress=True, resume=True)
+        else:
+            jobs = _split_pages_for_devices(missing_pages, index_devices)
+            logger.info(
+                "启用多 GPU 索引构建: %s",
+                ", ".join(f"{device}={len(pages)}页" for device, pages in jobs),
+            )
+            worker_payloads = [
+                {
+                    "device": device,
+                    "pages": pages,
+                    "model_cfg": {
+                        "repo": model_cfg.get("repo"),
+                        "base_repo": model_cfg.get("base_repo"),
+                        "dtype": model_cfg.get("dtype"),
+                    },
+                    "page_batch_size": page_batch_size,
+                    "storage_dtype": index_cfg.get("storage_dtype", "float16"),
+                    "index_dir": str(index_dir),
+                }
+                for device, pages in jobs
+            ]
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=len(worker_payloads)) as pool:
+                worker_results = pool.map(_encode_pages_worker, worker_payloads)
+            store.register_page_ids([page.page_id for page in missing_pages])
+            run_summary["index"]["worker_results"] = worker_results
+
         scope_page_ids = store.list_page_ids()
         if scope_page_ids:
             dim = int(store.read_page(scope_page_ids[0]).shape[-1])
             store.save_meta(model_cfg.get("repo", "vidore/colpali-v1.3"), dim=dim)
     index_build_time = time.perf_counter() - index_build_start
+
+    if page_encoder is None:
+        page_encoder = _load_page_encoder(
+            model_cfg,
+            index_cfg,
+            args,
+            device=retrieval_device,
+            batch_size=page_batch_size,
+        )
 
     pipeline = RetrievalPipeline(
         model=page_encoder,

@@ -101,6 +101,13 @@ class RetrievalPipeline:
         self._config = config
         self._score_batch_size = config.get("score_batch_size", 64)
         self._candidate_strategy = config.get("candidate_strategy", "full")
+        self._scoring_device = self._resolve_scoring_device()
+
+    def _resolve_scoring_device(self) -> torch.device:
+        device_name = getattr(self._query_encoder, "device", None)
+        if isinstance(device_name, str) and device_name.startswith("cuda") and torch.cuda.is_available():
+            return torch.device(device_name)
+        return torch.device("cpu")
 
     # ------------------------------------------------------------------
     # 查询编码
@@ -249,6 +256,8 @@ class RetrievalPipeline:
         if not candidate_ids:
             return torch.empty((0,)), []
 
+        scoring_device = self._scoring_device
+        query_emb_for_scoring = query_emb.to(scoring_device, non_blocking=True)
         all_scores: list[torch.Tensor] = []
         all_pids: list[str] = []
 
@@ -261,7 +270,8 @@ class RetrievalPipeline:
                 # read_stacked 成功 → 所有页 patch 数一致
                 if pages_tensor.numel() == 0:
                     continue
-                batch_scores = batched_maxsim(query_emb, pages_tensor)
+                pages_tensor = pages_tensor.to(scoring_device, non_blocking=True)
+                batch_scores = batched_maxsim(query_emb_for_scoring, pages_tensor).cpu()
 
             except Exception as e:
                 logger.warning(
@@ -276,16 +286,17 @@ class RetrievalPipeline:
                 # 检查 patch 数是否一致
                 shapes = {t.shape[0] for t in tensor_list}
                 if len(shapes) == 1:
-                    pages_tensor = torch.stack(tensor_list)
-                    batch_scores = batched_maxsim(query_emb, pages_tensor)
+                    pages_tensor = torch.stack(tensor_list).to(scoring_device, non_blocking=True)
+                    batch_scores = batched_maxsim(query_emb_for_scoring, pages_tensor).cpu()
                 else:
                     logger.debug(
                         "候选页面 patch 数不一致 (sizes=%s)，使用逐页 MaxSim",
                         shapes,
                     )
                     from zeroshot_vdr.retrieval.scoring import batched_maxsim_variable
+                    tensor_list = [tensor.to(scoring_device, non_blocking=True) for tensor in tensor_list]
                     batch_scores = batched_maxsim_variable(
-                        query_emb, tensor_list
+                        query_emb_for_scoring, tensor_list
                     )
 
             all_scores.append(batch_scores)

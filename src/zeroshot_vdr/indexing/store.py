@@ -46,6 +46,7 @@ class IndexStore:
 
         # 延迟创建目录，在首次写入时自动创建
         self._page_ids: list[str] | None = None  # 缓存
+        self._page_ids_set: set[str] | None = None
 
     # ------------------------------------------------------------------
     # 内部辅助
@@ -62,6 +63,11 @@ class IndexStore:
         safe_id = page_id.replace("/", "_").replace("\\", "_")
         return self._pages_dir / f"{safe_id}.pt"
 
+    def _write_embedding_file(self, page_id: str, embedding: torch.Tensor) -> None:
+        """仅写入页面 embedding 文件，不更新 page_ids 清单。"""
+        self._ensure_dirs()
+        torch.save(embedding, self._page_path(page_id))
+
     def _load_page_ids(self) -> list[str]:
         """加载或初始化 page_ids 列表。"""
         if self._page_ids is not None:
@@ -71,6 +77,7 @@ class IndexStore:
                 self._page_ids = json.load(f)
         else:
             self._page_ids = []
+        self._page_ids_set = set(self._page_ids)
         return self._page_ids
 
     def _save_page_ids(self) -> None:
@@ -80,11 +87,37 @@ class IndexStore:
         with open(self._page_ids_file, "w", encoding="utf-8") as f:
             json.dump(ids, f, ensure_ascii=False)
 
+    def _append_page_ids(self, page_ids: list[str]) -> bool:
+        """批量追加 page_ids，并在有新增时一次性落盘。"""
+        ids = self._load_page_ids()
+        ids_set = self._page_ids_set
+        if ids_set is None:
+            ids_set = set(ids)
+            self._page_ids_set = ids_set
+
+        added = False
+        for page_id in page_ids:
+            if page_id in ids_set:
+                continue
+            ids.append(page_id)
+            ids_set.add(page_id)
+            added = True
+
+        if added:
+            self._save_page_ids()
+
+        return added
+
     # ------------------------------------------------------------------
     # 核心写入接口
     # ------------------------------------------------------------------
 
-    def write_page(self, page_id: str, embedding: torch.Tensor) -> None:
+    def write_page(
+        self,
+        page_id: str,
+        embedding: torch.Tensor,
+        update_manifest: bool = True,
+    ) -> None:
         """写入单页 embedding → ``{page_id}.pt``。
 
         Parameters
@@ -94,18 +127,16 @@ class IndexStore:
         embedding : torch.Tensor
             shape ``[n_patches, dim]``
         """
-        self._ensure_dirs()
-        path = self._page_path(page_id)
-        torch.save(embedding, path)
+        self._write_embedding_file(page_id, embedding)
 
-        # 更新 page_ids 列表（去重追加）
-        ids = self._load_page_ids()
-        if page_id not in ids:
-            ids.append(page_id)
-            self._save_page_ids()
+        if update_manifest:
+            self._append_page_ids([page_id])
 
     def write_batch(
-        self, page_ids: list[str], embeddings: torch.Tensor
+        self,
+        page_ids: list[str],
+        embeddings: torch.Tensor,
+        update_manifest: bool = True,
     ) -> None:
         """批量写入页面 embeddings。
 
@@ -120,8 +151,18 @@ class IndexStore:
                 f"page_ids 数量 ({len(page_ids)}) 与 embeddings batch 维度 "
                 f"({embeddings.shape[0]}) 不匹配"
             )
+
+        new_page_ids: list[str] = []
         for pid, emb in zip(page_ids, embeddings):
-            self.write_page(pid, emb.cpu())
+            self._write_embedding_file(pid, emb.cpu())
+            new_page_ids.append(pid)
+
+        if update_manifest:
+            self._append_page_ids(new_page_ids)
+
+    def register_page_ids(self, page_ids: list[str]) -> None:
+        """批量注册已存在于磁盘中的页面 ID。"""
+        self._append_page_ids(page_ids)
 
     # ------------------------------------------------------------------
     # 核心读取接口

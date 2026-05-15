@@ -21,6 +21,11 @@ from zeroshot_vdr.indexing.store import IndexStore
 logger = logging.getLogger(__name__)
 
 
+def _is_cuda_oom(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "cuda out of memory" in message or isinstance(exc, torch.OutOfMemoryError)
+
+
 def _verify_peft_patch() -> None:
     """验证 sitecustomize PEFT MoE 兼容补丁是否已生效。
 
@@ -221,6 +226,7 @@ class PageEncoder:
         store: IndexStore,
         show_progress: bool = True,
         resume: bool = True,
+        update_manifest: bool = True,
     ) -> None:
         """遍历页面语料，逐批编码并写入索引存储。
 
@@ -236,6 +242,9 @@ class PageEncoder:
             是否显示进度条
         resume : bool
             是否跳过已索引的页面（断点续建）
+        update_manifest : bool
+            是否在写入后更新 ``page_ids.json``。多进程并行编码时可关闭，
+            由父进程统一合并 page_ids 清单，避免 manifest 写入竞争。
         """
         # 确定待编码页面
         if resume:
@@ -256,17 +265,12 @@ class PageEncoder:
         # 分批编码
         total = len(remaining)
         batch_size = self._batch_size
-
-        iterator = range(0, total, batch_size)
+        progress = None
         if show_progress:
-            iterator = tqdm(
-                iterator,
-                desc="编码页面",
-                unit="batch",
-                total=(total + batch_size - 1) // batch_size,
-            )
+            progress = tqdm(total=total, desc="编码页面", unit="page")
 
-        for start in iterator:
+        start = 0
+        while start < total:
             batch_pages = remaining[start : start + batch_size]
 
             # 加载图像
@@ -284,12 +288,27 @@ class PageEncoder:
                     continue
 
             if not images:
+                start += len(batch_pages)
                 continue
 
             # 编码
             try:
                 embeddings = self.encode_batch(images)
             except Exception as e:
+                if _is_cuda_oom(e) and batch_size > 1:
+                    new_batch_size = max(1, batch_size // 2)
+                    logger.warning(
+                        "批次编码 OOM，batch_size 从 %d 回退到 %d 后重试 (pages %d-%d)",
+                        batch_size,
+                        new_batch_size,
+                        start,
+                        start + len(batch_pages),
+                    )
+                    batch_size = new_batch_size
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    continue
+
                 logger.error("批次编码失败 (pages %d-%d): %s", start, start + batch_size, e)
                 raise
 
@@ -299,7 +318,14 @@ class PageEncoder:
 
             # 写入索引
             page_ids = [p.page_id for p in valid_pages]
-            store.write_batch(page_ids, embeddings)
+            store.write_batch(page_ids, embeddings, update_manifest=update_manifest)
+
+            start += len(batch_pages)
+            if progress is not None:
+                progress.update(len(batch_pages))
+
+        if progress is not None:
+            progress.close()
 
         logger.info("语料编码完成: %d 页面已写入索引", total)
 
