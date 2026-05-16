@@ -3,8 +3,10 @@
 > **项目名称**：ZeroShotVDR  
 > **方法基础**：ColPali（Late Interaction + VLM）  
 > **数据集**：MMLongBench  
-> **硬件环境**：Windows 10 原生 + NVIDIA RTX 4060 Laptop（8 GB 显存）+ Conda + uv  
+> **硬件环境**：当前主评测平台为 Ubuntu + 2x NVIDIA RTX 3090（24 GB 显存）+ Conda + uv；早期开发环境为 Windows 10 原生 + RTX 4060 Laptop（8 GB 显存）  
 > **时间跨度**：2025.5.8 – 2025.6.9
+
+> **v8 同步说明（2026-05-16）**：本计划已按当前仓库实现状态同步。Phase 3 已完成稳定页面身份语义下的全量评测、分析与方向决策；当前主评测协议为“Query 显式携带 sample-specific `candidate_page_ids`，检索阶段优先使用该候选集”；Phase 4 尚未开始，`src/zeroshot_vdr/advanced/` 目录仍未落地，但 `RetrievalPipeline`、`IndexStore` 与 `scoring.py` 已保留扩展点。
 
 ---
 
@@ -70,13 +72,12 @@ ZeroShotVDR/
 │       │       ├── page_001.png
 │       │       └── page_002.png
 │       ├── corpus_meta.json       # 页面语料元信息（统一契约）
-│       └── index/                 # 离线索引
+│       └── {index_name}/          # 离线索引（当前稳定 full run 使用 index_stable_page_ids）
 │           ├── pages/             # 逐页 embedding 文件（每页独立 .pt）
 │           │   ├── {page_id}.pt
 │           │   └── ...
 │           ├── index_meta.json    # 索引元信息：模型名称、维度、时间戳、页数
 │           └── page_ids.json      # 有序 JSON 数组 [page_id, ...]（稳定 ID 契约）
-│
 ├── src/zeroshot_vdr/              # 核心包（editable install）
 │   ├── __init__.py
 │   ├── contracts.py               # 数据契约：Page, Query, RetrievalResult 等 dataclass
@@ -99,10 +100,8 @@ ZeroShotVDR/
 │   │   ├── __init__.py
 │   │   ├── metrics.py             # 指标实现（与数据集解耦）
 │   │   └── ground_truth.py        # Ground truth 加载与适配
-│   └── advanced/                  # 进阶改进方法
-│       ├── __init__.py
-│       ├── patch_pruner.py        # 候选方向 A：自适应索引压缩
-│       └── two_stage.py           # 候选方向 B：两阶段粗精检索
+│   └── advanced/                  # Phase 4 预留目录（当前仓库尚未创建）
+│       └── ...
 │
 ├── config/
 │   └── default.yaml               # 全局配置文件（数据/模型/索引/检索/评测参数）
@@ -111,10 +110,12 @@ ZeroShotVDR/
 │   └── huggingface/               # 项目内 Hugging Face 缓存（模型/数据都放这里）
 │
 ├── scripts/                       # 运行与验证脚本
-│   ├── env.ps1                    # 激活 conda + 项目 .venv
+│   ├── env.ps1                    # Windows / PowerShell 激活入口
+│   ├── env.sh                     # Linux / bash 激活入口
 │   ├── check_env.py               # 基础环境验证
 │   ├── test_model_load.py         # ColPali 模型加载验证
 │   ├── run_step3_eval.py          # Step 3.1 评测脚本（支持 stats-only / smoke / full run）
+│   ├── run_step3_analysis.py      # Step 3.2 分析脚本（曲线、bad case、代表性样本）
 │   └── run_step3_clean.py         # Step 3 清理脚本（支持 dry-run / 范围清理 / 全量清理）
 │
 ├── outputs/                       # 检索结果 & 评测报告（不纳入版本控制）
@@ -133,6 +134,7 @@ ZeroShotVDR/
 │   ├── NJUProject_VDR.md          # 课程任务说明
 │   ├── Proposal_VDR.md            # 开题报告
 │   ├── Project_Plan.md            # 本文件：项目计划
+│   ├── Milestone_Report_Phase3.md # 阶段三里程碑报告
 │   └── revision/                  # 修订记录
 │       ├── core_module_revision_v1.md
 │       ├── core_module_revision_v2.md
@@ -141,7 +143,9 @@ ZeroShotVDR/
 │       ├── core_module_revision_v5.md
 │       ├── core_module_revision_v6.md
 │       ├── core_module_revision_v7.md
-│       └── step3_eval_revision_v1.md
+│       ├── project_plan_revision_v1.md
+│       ├── step3_eval_revision_v1.md
+│       └── step3_direction_revision_v1.md
 │
 ├── pyproject.toml                 # uv 原生项目配置
 ├── uv.lock                        # 依赖锁定文件
@@ -192,8 +196,8 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 | L1 任务族   | `task_family` | MMLongBench 中的大类任务         | `docqa`, `icl`, `niah`, `summ`, `vrag`                     |
 | L2 子任务   | `subtask`     | 任务族下的具体数据集变体         | `longdocurl`, `mmlongdoc`, `slidevqa`, `text_mmlongdoc` 等 |
 | L3 长度档位 | `length`      | 上下文长度 K 值                  | `K4`, `K8`, `K16`, `K32`, `K64`, `K128`                    |
-| L4 文档     | `doc_id`      | 单个文档的唯一标识（内部归一化） | 由原始 `doc_name` 字段通过 `normalize_doc_id()` 生成       |
-| L5 页面     | `page_idx`    | 文档内的页码（0-based）          | 整数，从 0 开始                                            |
+| L4 文档     | `doc_id`      | 单个文档的唯一标识（内部归一化） | Page 侧由原始图片路径解析 source doc id；Query 侧保留 `doc_name` 归一化值 |
+| L5 页面     | `page_idx`    | 文档内的页码（0-based）          | Page 侧由原始图片路径解析 source page idx                  |
 
 **全文统一命名规则：**
 
@@ -204,6 +208,8 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
   - 例：`docqa/longdocurl_K4/abc123/p0`
 - `query_id` 的稳定格式为：`{task_family}/{subtask}_{length}/{query_index}`
   - 例：`docqa/longdocurl_K4/q001`
+- 当前实现中，`Page` 侧的 `doc_id/page_idx` 不再直接取自样本级 `doc_name + enumerate(page_list)`，而是先从原始图片路径解析 source doc / source page，再填入上述 `page_id` 字符串格式
+- `Query` 除 `doc_id` 外还显式携带 `candidate_page_ids`，主协议优先使用该字段决定 sample-specific candidate scope；仅在其为空时才回退到 `query.doc_id` 对应的文档内候选页
 
 **命名分层对后续设计的意义：**
 
@@ -211,13 +217,15 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 2. page_id 自带层级前缀，天然隔离不同任务族/子任务/档位之间的命名冲突
 3. 评测结果可按 `task_family` / `subtask` / `length` 任一粒度分组汇总，无需事后解析 ID 字符串
 
-**`doc_name` → `doc_id` 归一化规则**（v3 固定）：
+**当前实现中的标识语义约束**（v8 同步）：
 
-> DocumentQA 原始样本使用 `doc_name` 表示文档来源。系统内部统一使用归一化后的 `doc_id` 作为稳定文档标识，并保留 `raw_doc_name` 以便回溯。若原始数据未提供独立 `doc_id` 字段，则由 `doc_name` 通过 `normalize_doc_id()` 按统一规则生成，禁止在不同模块中各自临时构造。所有 Adapter 和 Corpus 必须通过此函数获得 `doc_id`。
+> 需要区分 Page 侧与 Query 侧两套语义：Page 侧的稳定 `doc_id/page_idx` 从原始图片路径解析，用于构造全局稳定 `page_id`；Query 侧的 `doc_id` 仍保留为样本级 `doc_name` 归一化值，主要用于追踪与回退逻辑。禁止再用 sample 内 `enumerate(page_list)` 直接构造稳定页面身份。
 
 ---
 
 ## 二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）
+
+> **2026-05-16 同步说明**：本节中的 Win10 + RTX 4060 Laptop 步骤保留为早期开发环境记录。当前主评测与 full run 实际在 Ubuntu + 2x RTX 3090 上完成，Linux 下统一先在项目根目录执行 `source ./scripts/env.sh`，再运行 `python scripts/run_step3_eval.py` / `python scripts/run_step3_analysis.py`。
 
 ### 2.1 概览：分层管理
 
@@ -642,9 +650,9 @@ python scripts/run_step3_clean.py --all --yes
 
 | 子步骤 | 内容                                                                                                                                                                                                                                                                                                                                                                                              |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, raw_doc_name, task_family, subtask, length, page_idx, image_path）、`Query`（query_id, text, doc_id, raw_doc_name, task_family, subtask, length）、`RetrievalResult`（query_id, page_id, score, rank）、`RelevanceJudgment`（query_id, page_id, relevance）以及 ID 构造辅助函数 `normalize_doc_id()`, `build_page_id()`, `build_query_id()` |
-| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取原始 `doc_name` 字段，通过 `normalize_doc_id()` 转为内部 `doc_id`，读取 `page_list` + `ans_page_list`，转为统一 `Page` / `Query` / `RelevanceJudgment` 契约                                                                                                                                                                           |
-| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，分配稳定的 `page_id`（格式：`{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}`），输出 `corpus_meta.json`                                                                                                                                                                                                                                    |
+| 2.1.1  | 定义数据契约 `contracts.py`：`Page`（page_id, doc_id, raw_doc_name, task_family, subtask, length, page_idx, image_path）、`Query`（query_id, text, doc_id, raw_doc_name, task_family, subtask, length, candidate_page_ids）、`RetrievalResult`（query_id, page_id, score, rank）、`RelevanceJudgment`（query_id, page_id, relevance）以及 ID 构造辅助函数 `normalize_doc_id()`, `build_page_id()`, `build_query_id()`, `build_page_id_from_image()` |
+| 2.1.2  | 实现 `DocumentQAAdapter`：从 MMLongBench DocumentQA 子集读取 `doc_name`、`page_list` 与 `ans_page_list`；Query 侧保留 `normalize_doc_id(doc_name)` 作为样本级文档标识，同时根据 `page_list` 构建 `candidate_page_ids`；Page 侧则通过原始图片路径恢复稳定 source doc / source page 后生成 `page_id` |
+| 2.1.3  | 实现 `PageCorpus` 类：聚合所有适配器产出的页面，输出 `corpus_meta.json`；当前稳定页面身份仍沿用 `"{task_family}/{subtask}_{length}/{doc_id}/p{page_idx}"` 字符串格式，但 `doc_id/page_idx` 的语义已切换为图片路径解析得到的 source doc / source page |
 | 2.1.4  | 预留 `PDFAdapter`：基于 pypdfium2 的 PDF→图像 渲染路径，供后续补入非 DocumentQA 数据源                                                                                                                                                                                                                                                                                                            |
 
 **预期 API**：
@@ -671,11 +679,14 @@ class Query:
     task_family: str
     subtask: str
     length: str
+    candidate_page_ids: tuple[str, ...]
 
 # 全链路唯一合法的 ID 构造入口
 def normalize_doc_id(raw_doc_name: str) -> str: ...
 def build_page_id(task_family, subtask, length, doc_id, page_idx) -> str: ...
 def build_query_id(task_family, subtask, length, query_index) -> str: ...
+def build_page_id_from_image(task_family, subtask, length, image_rel_path,
+                             fallback_page_idx=None) -> str: ...
 
 # src/zeroshot_vdr/data/corpus.py
 class PageCorpus:
@@ -749,7 +760,7 @@ class IndexStore:
 | 2.3.1  | 使用 ColPali 的文本编码器对查询进行编码（query tokens → embeddings `[n_tokens, dim]`）。当前实现中的 `QueryEncoder` 需要 `model + processor`，并额外提供 `from_pretrained()` / `from_page_encoder()` / `encode_batch()` 作为便利构造与批量接口。                                                                                            |
 | 2.3.2  | 实现 **MaxSim 相似度**模块：对查询中每个 token，找到页面 patch 中最高相似度，求和。当前默认 `Sim` 为 **L2 归一化后的点积**（等价于余弦相似度），独立为 `scoring.py`，便于后续替换或扩展打分函数。                                                                                                                                           |
 | 2.3.3  | **显存优化**：逐页或分批计算，避免构建 `[n_queries, n_pages, n_tokens, n_patches]` 全相似度矩阵                                                                                                                                                                                                                                             |
-| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**Baseline 默认行为**：`retrieve(Query)` 接收 Query 对象；仅当 `candidate_ids is None` 时，候选召回才默认返回与 `query.doc_id` 对应的文档内页面集合（非全局语料）。若显式传入 `candidate_ids=[]`，当前实现会将其视为**空候选集**并直接返回空结果。 |
+| 2.3.4  | 实现 `RetrievalPipeline`：编排"查询编码 → 候选召回 → 精排打分 → Top-k 结果组装"四个环节。**当前 baseline 默认行为**：若 `Query` 自带 `candidate_page_ids`，候选召回优先直接返回该 sample-specific 候选集；仅当 `candidate_page_ids` 为空且 `candidate_ids is None` 时，才回退到与 `query.doc_id` 对应的文档内页面集合。若显式传入 `candidate_ids=[]`，则直接返回空结果。 |
 | 2.3.5  | Top-k 排序（k = 1, 3, 5, 10），返回 `[RetrievalResult(query_id, page_id, score, rank)]`                                                                                                                                                                                                                                                     |
 | 2.3.6  | 记录查询耗时。当前实现会在 `retrieve()` 内统计**单次查询耗时**并输出 debug 日志；并未在检索层维护公共的“平均延迟”累积状态，后续若需平均值，应在评测/实验层聚合。                                                                                                                                                                            |
 
@@ -903,57 +914,60 @@ class GroundTruthLoader:
 
 **目标**：完成基础系统的全面评测，分析瓶颈与失败案例。
 
-> **评测协议**（详见 4.5.5）：Baseline 采用**文档内页级检索**（per-document ranking），
-> 即每个查询仅在所属文档的页面集合内排序。DocumentQA 三个子任务分别评测汇报，
-> 以 K32 为主长度档位，同时对比所有档位的趋势。
+> **评测协议**（详见 4.5.5）：当前 stable baseline 采用**query-scoped page retrieval**，
+> 即每个查询优先只在其 `candidate_page_ids` 对应的 sample-specific 页面集合内排序；
+> 仅在该字段缺失时才回退到 `query.doc_id` 对应的文档内页面集合。主汇报口径不再以 K32 为主，
+> 而是以全部长度档位的完整披露 + 14,385 条有效标注查询的主比较口径并行呈现。
 
 #### Step 3.1 全量评测
 
-- [ ] 在 DocumentQA 三个子任务（longdocurl/mmlongdoc/slidevqa）× 所有长度档位（K4-K128）上运行文档内检索
-- [ ] 输出 k=1,3,5,10 下的 Recall, Precision, MRR, nDCG（分子任务、分档位）
-- [ ] 以 K32 为主档位汇报汇总表，同时提供跨档位趋势图
-- [ ] 记录效率指标：索引构建时间、索引文件大小、单次检索延迟
+- [x] 在 DocumentQA 三个子任务（longdocurl/mmlongdoc/slidevqa）× 所有长度档位（K4-K128）上运行 stable baseline 全量评测
+- [x] 输出 k=1,3,5,10 下的 Recall, Precision, MRR, nDCG（分子任务、分档位）
+- [x] 记录效率指标：索引构建时间、索引文件大小、单次检索延迟
+- [x] 建立“完整披露口径 + 有效标注主比较口径”双轨汇报方式
 
-**当前实现状态（2026-05-13 同步）**：
+**当前实现状态（2026-05-16 同步）**：
 
 - Step 3.1 已有可执行脚本：`scripts/run_step3_eval.py`
+- Linux 主平台统一先执行 `source ./scripts/env.sh`，评测脚本默认以项目内 Hugging Face 缓存 + offline 模式运行
 - Step 3 清理入口已补齐：`scripts/run_step3_clean.py`
-- 脚本默认遵循文档内检索协议，并以项目内缓存 + Hugging Face offline 模式运行
-- 支持 `--stats-only`、`--max-queries`、`--query-offset`、`--skip-index-build`，适合弱设备先做局部验证
+- 当前 stable 协议已从“仅按 `query.doc_id` 默认候选”升级为“优先按 `Query.candidate_page_ids` 决定样本级候选范围”
+- 支持 `--stats-only`、`--max-queries`、`--query-offset`、`--skip-index-build`，适合先做局部验证
 - 清理脚本支持 `--run-names`、`--subtasks`、`--lengths` 与 `--all`，默认 dry-run 预览，适合在重跑前清理旧结果与局部索引
 - 当前输出会按 run_name 写入 `outputs/eval_reports/{run_name}/`，其中 `metrics_summary.csv` 为汇总表，`run_summary.json` 记录范围统计与性能指标
+- 当前稳定版 full run 目录为 `outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/`
+- 历史目录 `outputs/eval_reports/step3_docqa_full_dual3090/` 仅可作为 provisional baseline 对照，不再作为主结论依据
 
-**本机时间估算（Windows 10 + RTX 4060 Laptop 8GB，保守按 `--page-batch-size 1 --score-batch-size 8`）**：
+**当前稳定运行实测（Ubuntu + 2x RTX 3090）**：
 
-- 已统计的全量主评测范围：15,577 queries，3,653 docs，117,724 pages；当前索引外仍需编码 117,704 pages
-- `longdocurl/K4` smoke test（5 queries，20 pages）实测平均单查询延迟约 **0.184 s/query**，该样本平均候选页数为 4.4
-- 已完成的 `slidevqa/K32` 代表性基准（5 queries，71 pages，平均 36.4 candidates/query）结果为：
-  - 索引补建 **240.45 s / 71 pages ≈ 3.39 s/page**
-  - 检索阶段平均 **0.156 s/query**
-- 以该代表性基准外推：
-  - 全量索引补建约 **110.7 小时**
-  - 全量检索约 **0.7 小时**
-- 合并模型加载、结果落盘与少量 I/O 波动后，本机完整 Step 3.1 全量评测的现实估算为 **110–115 小时（约 4.6–4.8 天）**
-
-> 说明：上述时间估算以“当前已验证稳定”的保守配置为基线。若更高 `page_batch_size` 在本机长期稳定不 OOM，则总时长可能下降；但在未完成整轮实测前，不作为主估算写入计划。
+- 评测范围：15,577 queries / 3,653 docs / 87,922 pages
+- 索引补建时间：6,689.0 s（约 1h51m29s）
+- 检索时间：1,102.9 s（约 18m23s）
+- 平均延迟：0.071 s/query
+- P95 延迟：0.138 s/query
+- 当前有效全量索引目录：`data/processed/index_stable_page_ids/`，体量约 88.6 GB
 
 #### Step 3.2 结果分析
 
-- [ ] 绘制 k vs 指标曲线（Recall@k, Precision@k, nDCG@k）
-- [ ] 识别 Bad Cases：Recall@10 < 1.0 的查询，人工分析失败原因
-- [ ] 分类失败类型（如：跨页图表、视觉密集版面、查询歧义等）
+- [x] 绘制 k vs 指标曲线（Recall@k, Precision@k, nDCG@k）
+- [x] 识别 Bad Cases：Recall@10 < 1.0 的查询，并单独剥离 `no_ground_truth`
+- [x] 分类失败类型（如：miss_top10、multi_page_partial、neighbor-page confusion）
+- [x] 输出分析目录：`outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/analysis/`
+- [x] 当前分析结论：1,192 条查询缺失或带无效页级标注；14,385 条为有效标注查询；真实 bad case 2,636 条，bad-case rate = 18.32%
 
 #### Step 3.3 方向决策
 
-- [ ] 基于失败分析，确定 Phase 4 的改进方向（方向 A 或 B，或二者结合）
-- [ ] 撰写 Milestone 报告（5.28 截止）
+- [x] 基于失败分析，确定 Phase 4 主线为方向 B：查询自适应两阶段粗精检索
+- [x] 保留方向 A 作为补充实验 / 未来工作
+- [x] 完成方向决策文档：`docs/revision/step3_direction_revision_v1.md`
+- [x] 完成里程碑报告：`docs/Milestone_Report_Phase3.md`
 
 #### Phase 3 产出
 
-- [ ] `outputs/eval_reports/{run_name}/metrics_summary.csv`（含子任务×档位的完整结果）
-- [ ] `outputs/eval_reports/{run_name}/run_summary.json`（记录规模统计、索引状态与性能指标）
-- [ ] Bad Cases 分析笔记
-- [ ] Milestone 报告草稿
+- [x] `outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/`（稳定语义 full run 结果）
+- [x] `outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/analysis/`（Step 3.2 分析结果）
+- [x] `docs/revision/step3_direction_revision_v1.md`
+- [x] `docs/Milestone_Report_Phase3.md`
 
 ---
 
@@ -961,33 +975,42 @@ class GroundTruthLoader:
 
 **目标**：设计并实现一种原创的改进方法，通过实验验证有效性。
 
-#### 候选方向 A：查询感知的自适应索引压缩
+> **2026-05-16 同步说明**：Phase 4 尚未开始。当前仓库仍无 `src/zeroshot_vdr/advanced/` 目录，但已具备三处可直接复用的扩展点：`IndexStore.get_mean_pooled_view()`、`RetrievalPipeline` 中的 `candidate_strategy="mean_pool_topN"`、以及 `batched_maxsim_variable()`。
+
+#### 补充方向 A：查询感知的自适应索引压缩
 
 | 步骤 | 内容                                                   |
 | ---- | ------------------------------------------------------ |
 | 4A.1 | 实现 Patch 信息量评分器（信息熵 / 与均值池化的偏离度） |
 | 4A.2 | 对每页保留 top-m 个高信息量 patch embeddings           |
 | 4A.3 | 实验中对比不同 m 值下的 检索性能 vs 存储开销           |
-| 4A.4 | 目标：Recall@5 下降 <= 2%，索引缩减 >= 50%             |
+| 4A.4 | 目标：在不显著损伤 hardest slices 的前提下压缩索引体量 |
 
-**文件**：`src/zeroshot_vdr/advanced/patch_pruner.py`
+**计划落地位置**：`src/zeroshot_vdr/advanced/patch_pruner.py`（尚未创建）
 
-#### 候选方向 B：两阶段粗精检索
+#### 主线方向 B：查询自适应的两阶段粗精检索
 
 | 步骤 | 内容                                                           |
 | ---- | -------------------------------------------------------------- |
-| 4B.1 | 第一阶段：页面全局表示（patch mean pooling）快速粗筛 -> top-50 |
-| 4B.2 | 第二阶段：在候选集上 full MaxSim 精排 -> top-k                 |
-| 4B.3 | 对比不同候选集规模下的速度与精度                               |
-| 4B.4 | 目标：精度无损（Recall@5 下降 <= 1%），检索延迟降低 >= 3x      |
+| 4B.1 | 第一阶段：页面 mean-pooled 表示做粗筛，候选规模采用自适应 top-N 而非固定 top-50 |
+| 4B.2 | 第二阶段：在缩小后的候选集上执行 full MaxSim 精排 -> top-k     |
+| 4B.3 | 引入邻页扩展，针对多页证据与邻页混淆场景做补偿                 |
+| 4B.4 | 目标：在 14,385 条有效标注查询上保持或提升质量，并降低长上下文切片延迟 |
 
-**文件**：`src/zeroshot_vdr/advanced/two_stage.py`
+**计划落地位置**：优先新增 `src/zeroshot_vdr/advanced/two_stage.py`（尚未创建）；若先做最小实现，也可先在 `retrieval/pipeline.py` 中落地可运行版本
+
+#### 当前已具备的代码扩展点
+
+- `src/zeroshot_vdr/indexing/store.py`：`get_mean_pooled_view()`
+- `src/zeroshot_vdr/retrieval/pipeline.py`：`candidate_strategy="mean_pool_topN"`
+- `src/zeroshot_vdr/retrieval/scoring.py`：`batched_maxsim_variable()`
 
 #### 实验设计（两方向通用）
 
-- [ ] Baseline（ColPali）vs. 改进方法的 4 项指标对比
+- [ ] Baseline（stable page id + query-scoped candidate baseline）vs. 改进方法的 4 项指标对比
 - [ ] 效率对比（检索延迟、索引大小、显存占用）
 - [ ] 消融实验（验证改进中各组件贡献）
+- [ ] 全部主比较均固定在 14,385 条有效标注查询上完成
 
 #### Phase 4 产出
 
@@ -1044,7 +1067,8 @@ class GroundTruthLoader:
 > （3）检索层从单一 Retriever 类改为分环节流水线；
 > （4）评测层将指标计算与数据集适配解耦；
 > （5）新增显式的数据契约层，统一页面/查询/结果标识体系；
-> （6）根据 Step 2.2 实际实现同步更新索引层接口（PageEncoder processor 参数、from_pretrained 工厂方法、encode_corpus resume 参数、page_ids.json 数组格式、save_meta 显式触发、get_mean_pooled_view 返回 tuple、write_batch 接口）。
+> （6）根据 Step 2.2 实际实现同步更新索引层接口（PageEncoder processor 参数、from_pretrained 工厂方法、encode_corpus resume 参数、page_ids.json 数组格式、save_meta 显式触发、get_mean_pooled_view 返回 tuple、write_batch 接口）；
+> （7）根据 stable redesign 同步更新页面身份与评测协议说明（`candidate_page_ids`、source-image-derived page_id、有效标注主比较口径）。
 
 ---
 
@@ -1052,18 +1076,22 @@ class GroundTruthLoader:
 
 所有模块间传递的核心对象统一使用以下 dataclass，确保 page_id / query_id 在索引、检索、评测全链路中一致。
 
-> **v3 修订说明**：
+> **v8 同步说明**：
 >
 > 1. `source_subset` 字段已不足以承载文档内检索、跨子任务评测和多档位对比的需求，
 >    替换为 `task_family` + `subtask` + `length` 的显式分层字段。
-> 2. `Query` 必须携带 `doc_id`，因为 baseline 采用文档内检索协议，
->    候选集合需约束在同一文档的页面内（详见 4.5.5）。
+> 2. `Query` 仍保留 `doc_id`，但当前主协议优先使用 `candidate_page_ids` 决定 sample-specific 候选范围；
+>    `doc_id` 主要用于追踪和在 `candidate_page_ids` 缺失时的回退逻辑（详见 4.5.5）。
 > 3. 新增 `raw_doc_name` 字段保留原始文档来源标识，便于调试和数据核对。
 > 4. `RetrievalResult` 新增 `query_id` 字段，使单条结果可独立追溯其来源查询。
+> 5. `Page.page_id` 的字符串格式未变，但其 `doc_id/page_idx` 语义已切换为从原始图片路径解析得到的 source doc / source page；
+>    `contracts.py` 当前新增 `normalize_image_rel_path()`、`extract_source_doc_id()`、`extract_source_page_idx()`、`build_page_id_from_image()` 等 helper。
 
-**DocumentQA 的文档标识来源**（v3 固定）：
+**DocumentQA 的标识语义（当前实现）**：
 
-DocumentQA 原始样本使用 `doc_name` 表示文档来源。系统内部统一使用归一化后的 `doc_id` 作为稳定文档标识，并保留 `raw_doc_name` 以便回溯。若原始数据未提供独立 `doc_id` 字段，则由 `doc_name` 按统一规则生成（通过 `normalize_doc_id()`），禁止在不同模块中各自临时构造。
+- Page 侧：从 `page_list` 中的原始图片路径解析 `source_doc_id` 与 `source_page_idx`，再构造稳定 `page_id`
+- Query 侧：保留 `normalize_doc_id(doc_name)` 作为样本级文档标识，并显式携带 `candidate_page_ids`
+- 因此，当前实现中“Page 的 `doc_id`”与“Query 的 `doc_id`”不再要求语义完全相同；真正的检索候选范围由 `candidate_page_ids` 决定
 
 ```python
 """
@@ -1071,19 +1099,19 @@ DocumentQA 原始样本使用 `doc_name` 表示文档来源。系统内部统一
 所有 page_id / query_id 均为稳定字符串，贯穿索引→检索→评测全链路。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Page:
     """页面语料中的单页。"""
     page_id: str           # 稳定唯一标识，格式: {task_family}/{subtask}_{length}/{doc_id}/p{page_idx}
-    doc_id: str            # 所属文档标识（由 raw_doc_name 归一化得到）
+    doc_id: str            # 由原始图片路径解析出的稳定 source doc id
     raw_doc_name: str | None  # 原始数据中的文档来源字段（doc_name），用于调试和回溯
     task_family: str       # L1 任务族（docqa / icl / niah / summ / vrag）
     subtask: str           # L2 子任务（longdocurl / mmlongdoc / slidevqa / ...）
     length: str            # L3 长度档位（K4 / K8 / K16 / K32 / K64 / K128）
-    page_idx: int          # 文档内页码（0-based）
+    page_idx: int          # 由原始图片路径解析出的 source page idx（0-based）
     image_path: str        # 页面图像文件路径
 
 
@@ -1091,17 +1119,18 @@ class Page:
 class Query:
     """单条检索查询。
 
-    由于 baseline 采用文档内检索，Query 必须显式携带所属文档标识 doc_id，
-    以便默认候选集合能够约束在同一文档页面内。纯文本字符串查询仅作为便利接口存在，
+    当前 baseline 主协议优先使用 candidate_page_ids 做 sample-specific 候选约束；
+    doc_id 仍保留用于追踪和缺省回退逻辑。纯文本字符串查询仅作为便利接口存在，
     不作为 baseline 主协议。
     """
     query_id: str          # 稳定唯一标识，格式: {task_family}/{subtask}_{length}/{query_index}
     text: str              # 查询文本
-    doc_id: str            # 所属文档标识（决定默认候选范围）
+    doc_id: str            # 样本级文档标识（回退逻辑 / 调试用）
     raw_doc_name: str | None  # 原始数据中的文档来源字段
     task_family: str       # L1 任务族
     subtask: str           # L2 子任务
     length: str            # L3 长度档位
+    candidate_page_ids: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -1160,11 +1189,32 @@ def build_query_id(
     这是全链路唯一合法的 query_id 构造入口。
     """
     ...
+
+
+def normalize_image_rel_path(image_rel_path: str) -> str: ...
+
+
+def extract_source_doc_id(image_rel_path: str) -> str: ...
+
+
+def extract_source_page_idx(
+    image_rel_path: str,
+    fallback_page_idx: int | None = None,
+) -> int: ...
+
+
+def build_page_id_from_image(
+    task_family: str,
+    subtask: str,
+    length: str,
+    image_rel_path: str,
+    fallback_page_idx: int | None = None,
+) -> str: ...
 ```
 
-**ID 构造约束**（v3 固定）：
+**ID 构造约束**（v8 同步）：
 
-`build_page_id()` 和 `build_query_id()` 是全链路唯一合法的 ID 构造入口。`GroundTruthLoader`、`DocumentQAAdapter`、`PageCorpus` 和结果落盘模块不得自行拼接 ID 字符串，必须通过上述函数获取。这一约束能显著减少隐式不一致。
+`build_page_id()` / `build_query_id()` 仍是最终字符串格式的合法构造入口；但对 DocumentQA 而言，Page 侧必须先通过原始图片路径恢复 source doc / source page，再调用 `build_page_id()` 或 `build_page_id_from_image()`。`DocumentQAAdapter`、`GroundTruthLoader` 和结果落盘模块不得再以 sample 内页序直接拼接稳定页面身份。
 
 ---
 
@@ -1197,9 +1247,10 @@ class DocumentQAAdapter(BaseAdapter):
     MMLongBench DocumentQA 子集适配器。
 
     输入：mmlb_data/documentQA/ 下的 JSONL 文件（含 page_list + ans_page_list）。
-    原始文档来源字段为 doc_name，适配器内部通过 normalize_doc_id() 转为 doc_id。
-    输出：Page（page_id = "docqa/{subtask}_{length}/{doc_id}/p{idx}"）、
-          Query（携带 doc_id 以支持文档内检索协议）、RelevanceJudgment。
+        Query 侧保留 normalize_doc_id(doc_name) 作为样本级 doc_id；
+        Page 侧则通过原始图片路径恢复稳定 source doc / source page 后构造 page_id。
+        输出：Page（基于图片路径构造稳定 page_id）、
+            Query（携带 doc_id 与 candidate_page_ids）、RelevanceJudgment。
     """
 
     def __init__(self, data_dir: str, subset_filter: str | None = None): ...
@@ -1460,7 +1511,7 @@ class IndexStore:
 
 ### 4.3 检索层（`retrieval/`）
 
-**设计原则**：检索不是单一步骤，而是"查询编码 → 候选召回 → 精排打分 → 结果组装"的流水线。Baseline 中候选召回=文档内全量页面（等价于在单文档候选集上直接执行 full MaxSim），但流水线结构已为 Phase 4 两阶段检索预留扩展点。
+**设计原则**：检索不是单一步骤，而是"查询编码 → 候选召回 → 精排打分 → 结果组装"的流水线。当前 stable baseline 中，候选召回优先采用 Query 显式携带的 sample-specific `candidate_page_ids`；若该字段为空，才回退为文档内全量页面。流水线结构已为 Phase 4 两阶段检索预留扩展点。
 
 ```python
 """
@@ -1558,9 +1609,9 @@ class RetrievalPipeline:
     4. assemble_results(top_k)    → 排序、截断、封装为 RetrievalResult 列表
 
     Baseline 模式下，retrieve() 接收 Query 对象而不是纯文本字符串。
-    仅当 candidate_ids is None 时，generate_candidates() 才默认返回与
-    query.doc_id 对应的全部页面，即文档内候选集合，而不是全局页面集合。
-    若调用方显式传入 candidate_ids=[]，当前实现会将其视为“空候选集”，
+    若 Query 自带 candidate_page_ids，则 generate_candidates() 优先直接返回该集合；
+    仅当 candidate_page_ids 为空且 candidate_ids is None 时，才回退到
+    query.doc_id 对应的全部页面。若调用方显式传入 candidate_ids=[]，
     retrieve() 将直接返回空结果，而不会回退到默认候选生成。
     仅在显式启用 global retrieval 实验配置时，候选范围才允许扩展为全局语料。
 
@@ -1584,10 +1635,11 @@ class RetrievalPipeline:
         Parameters
         ----------
         query : Query
-            检索查询对象，必须携带 doc_id。
+            检索查询对象，当前可携带 candidate_page_ids。
         top_k : int
         candidate_ids : list[str] | None
-            候选页面列表；为 None 时默认使用 query.doc_id 对应的文档内页面集合。
+            候选页面列表；为 None 时优先使用 query.candidate_page_ids，
+            否则回退到 query.doc_id 对应的文档内页面集合。
             若显式传入空列表，则视为“空候选集”，返回空结果。
         score_batch_size : int | None
             逐批计算 MaxSim 的页面 batch 大小；None 表示使用配置默认值。
@@ -1620,7 +1672,7 @@ class RetrievalPipeline:
         """
         候选召回阶段。
 
-        Baseline：返回与 query.doc_id 对应的全部页面（文档内候选）。
+        Baseline：优先返回 Query 自带的 `candidate_page_ids`；若为空，则回退到 query.doc_id 对应的文档内页面。
         Phase 4：可替换为均值池化粗筛。
         仅在显式启用全局检索配置时，候选范围才允许跳出文档内约束。
         """
@@ -1806,7 +1858,7 @@ class GroundTruthLoader:
 encode_query → generate_candidates → score_candidates → assemble_results
 ```
 
-- **Baseline**：`generate_candidates` 默认返回当前 `query.doc_id` 对应文档内的全部 page_ids，等价于当前 baseline 的文档内全量候选行为。
+- **Baseline**：`generate_candidates` 优先返回当前 Query 的 `candidate_page_ids`；仅在其为空时，才回退到 `query.doc_id` 对应文档内的全部 page_ids。
 - **两阶段检索（Phase 4B）**：只需替换 `generate_candidates` 为均值池化粗筛，其余环节复用。
 - **索引压缩（Phase 4A）**：只需在 `score_candidates` 中处理变长 patch 的张量。
 
@@ -1827,36 +1879,38 @@ encode_query → generate_candidates → score_candidates → assemble_results
 
 DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集合"，这引出一个关键设计决定：检索的候选范围。
 
-**Baseline 检索范围**：
+**当前 stable baseline 的检索范围**：
 
 | 选项                          | 描述                               | 本项目选择                |
 | ----------------------------- | ---------------------------------- | ------------------------- |
-| 文档内检索（per-document）    | 每个查询仅在对应文档的页面内排序   | ✅ **Baseline 采用**      |
+| sample-specific 候选检索      | 每个查询仅在其 `candidate_page_ids` 对应页面内排序 | ✅ **当前 stable baseline 采用** |
+| 文档内回退检索（per-document） | 当 `candidate_page_ids` 缺失时，回退到 `query.doc_id` 对应页面集合 | 回退逻辑 |
 | 全局语料检索（global corpus） | 所有文档的所有页面混合为一个语料库 | 留作 Phase 4 可选扩展对比 |
 
-选择文档内检索的理由：
+选择当前协议的理由：
 
-1. DocumentQA 的 ground truth（`ans_page_list`）天然标注的是同一文档内的相关页面。
-2. 跨文档检索会引入额外的文档级区分问题，而 DocumentQA 本身不提供跨文档的相关性标注。
-3. 在文档内评测能更纯粹地反映页面级视觉匹配能力。
+1. DocumentQA 的 `page_list` 天然给出了样本级候选页面范围，当前 stable redesign 已据此构建 `candidate_page_ids`。
+2. 长上下文场景下，旧的 sample 内 `doc_id/page_idx` 语义并不稳定；只有回到原始图片路径恢复 source doc / source page，评测结论才可信。
+3. 跨文档检索会引入额外的文档级区分问题，而当前数据集并不提供可直接比较的跨文档页级相关性标注。
 
 **结果汇报粒度**：
 
 | 维度                                        | 汇报方式                                                    |
 | ------------------------------------------- | ----------------------------------------------------------- |
-| 子任务（longdocurl / mmlongdoc / slidevqa） | **分别汇报**各项指标，同时提供加权平均                      |
-| 长度档位（K4/K8/K16/K32/K64/K128）          | 以 **K32 为主档位**（平衡规模与代表性），同时做跨档位趋势图 |
-| 汇总                                        | 在报告主表中展示 docqa 三个子任务×K32 的完整结果            |
+| 子任务（longdocurl / mmlongdoc / slidevqa） | **分别汇报**各项指标，同时提供总体汇总                      |
+| 长度档位（K4/K8/K16/K32/K64/K128）          | 全档位完整披露，并输出跨档位趋势图                          |
+| 主比较口径                                  | 仅统计 14,385 条有效页级标注查询                            |
+| 完整披露口径                                | 保留全部 15,577 条查询结果，作为附录级披露                  |
 
-**注**：K32 被选为主档位的原因：它在长度档位中处于中间位置，页面数适中（不会太少导致指标方差大，也不会太多导致索引构建时间过长），且 MMLongBench 论文中常以中间档位作为主要对比点。
+**注**：Phase 3 完成后，主汇报口径已从“以 K32 为主档位”调整为“以有效标注查询子集为主比较口径”。原因是当前指标实现会把空 relevant set 记为完美召回 / 完美 MRR，若不先剥离 `no_ground_truth` 查询，主表会被系统性抬高。
 
 **主评测子任务范围**（v3 固定）：
 
 > Phase 2-3 的主评测范围固定为 DocumentQA 中的 `longdocurl`、`mmlongdoc`、`slidevqa` 三个子任务。`text_mmlongdoc` 不纳入主评测表，除非后续确认其图像页面与标注协议可与当前页级检索设置严格对齐。此约束直接影响数据加载、结果统计和报告主表。
 
-**Baseline 检索协议的接口层落实**（v3 固定）：
+**Baseline 检索协议的接口层落实**（v8 同步）：
 
-> Baseline 模式下，`RetrievalPipeline.retrieve()` 接收 `Query` 对象（非纯文本字符串）。仅当 `candidate_ids is None` 时，其默认候选范围才是与 `query.doc_id` 对应的页面集合，而不是全局语料集合；若显式传入 `candidate_ids=[]`，当前实现会直接返回空结果。只有在显式启用全局检索实验配置时，系统才允许跳出文档内候选范围。`retrieve_text()` 仅作为便利包装接口存在，不承担 baseline 默认协议，调用方必须显式提供 `candidate_ids`。
+> Baseline 模式下，`RetrievalPipeline.retrieve()` 接收 `Query` 对象（非纯文本字符串）。若 `Query.candidate_page_ids` 非空，`generate_candidates()` 会优先直接返回该集合；仅当该字段为空且 `candidate_ids is None` 时，默认候选范围才会回退到与 `query.doc_id` 对应的页面集合，而不是全局语料集合；若显式传入 `candidate_ids=[]`，当前实现会直接返回空结果。只有在显式启用全局检索实验配置时，系统才允许跳出当前样本/文档候选范围。`retrieve_text()` 仅作为便利包装接口存在，不承担 baseline 默认协议，调用方必须显式提供 `candidate_ids`。
 
 #### 4.5.6 索引存储策略的阶段性权衡（v2 新增）
 
@@ -1890,7 +1944,7 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 | 便利实现                                                    | Phase 4 的可能变化                                                                                        |
 | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `IndexStore.read_stacked()` 返回全量 stacked tensor         | 变长 patch 时不可用，需改用 `iter_pages()`；不影响核心抽象                                                |
-| `RetrievalPipeline.generate_candidates()` 默认文档内候选    | Phase 4B 替换为均值池化粗筛；全局检索需显式配置                                                           |
+| `RetrievalPipeline.generate_candidates()` 默认 query-scoped 候选，缺失时回退到文档内候选 | Phase 4B 替换为均值池化粗筛；全局检索需显式配置                                                           |
 | `scoring.batched_maxsim()` 假设同 batch 内各页 patch 数相同 | 当前实现已提供 `batched_maxsim_variable()` 作为逐页回退路径；Phase 4A 后也可继续演进为 padding / 分桶策略 |
 | `RetrievalPipeline.retrieve_text()` 纯文本便利包装          | 不承担 baseline 默认协议；调用方需显式提供 candidate_ids                                                  |
 
