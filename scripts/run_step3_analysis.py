@@ -151,7 +151,7 @@ def _build_case_frame(
         recall_at_k = (
             len(hit_ranks) / len(relevant_set)
             if relevant_set
-            else 0.0
+            else None
         )
         first_relevant_rank = min(hit_ranks) if hit_ranks else None
 
@@ -186,7 +186,9 @@ def _build_case_frame(
             else None
         )
 
-        if recall_at_k >= 1.0:
+        if not relevant_set:
+            failure_mode = "no_ground_truth"
+        elif recall_at_k >= 1.0:
             failure_mode = "ok"
         elif len(relevant_set) > 1 and hit_ranks:
             failure_mode = "multi_page_partial"
@@ -232,10 +234,15 @@ def _build_case_frame(
 
 def _build_bad_case_summary(case_frame: pd.DataFrame) -> pd.DataFrame:
     grouped = (
-        case_frame.assign(is_bad=lambda df: df["recall_at_k"] < 1.0)
+        case_frame.assign(
+            has_ground_truth=lambda df: df["num_relevant_pages"] > 0,
+            is_bad=lambda df: (df["num_relevant_pages"] > 0) & (df["recall_at_k"] < 1.0),
+        )
         .groupby(["subtask", "length"], as_index=False)
         .agg(
             queries=("query_id", "count"),
+            queries_with_ground_truth=("has_ground_truth", "sum"),
+            no_ground_truth=("failure_mode", lambda values: int((values == "no_ground_truth").sum())),
             bad_cases=("is_bad", "sum"),
             miss_top10=("failure_mode", lambda values: int((values == "miss_top10").sum())),
             late_hit=("failure_mode", lambda values: int((values == "late_hit").sum())),
@@ -244,7 +251,12 @@ def _build_bad_case_summary(case_frame: pd.DataFrame) -> pd.DataFrame:
             mean_latency_s=("latency_s", "mean"),
         )
     )
-    grouped["bad_case_rate"] = grouped["bad_cases"] / grouped["queries"]
+    grouped["bad_case_rate"] = grouped.apply(
+        lambda row: row["bad_cases"] / row["queries_with_ground_truth"]
+        if row["queries_with_ground_truth"]
+        else 0.0,
+        axis=1,
+    )
     return grouped.sort_values(["bad_case_rate", "mean_candidate_pages"], ascending=[False, False])
 
 
@@ -380,8 +392,10 @@ def _write_summary_markdown(
     ][["subtask", "k", "Recall", "Precision", "MRR", "nDCG"]].copy()
 
     total_queries = int(run_summary["scope_stats"]["selected_queries"])
+    queries_with_ground_truth = int(bad_case_summary["queries_with_ground_truth"].sum())
+    no_ground_truth = int(bad_case_summary["no_ground_truth"].sum())
     bad_cases = int(bad_case_summary["bad_cases"].sum())
-    bad_case_rate = bad_cases / total_queries if total_queries else 0.0
+    bad_case_rate = bad_cases / queries_with_ground_truth if queries_with_ground_truth else 0.0
 
     hotspot_summary = bad_case_summary.head(8)[
         [
@@ -389,6 +403,8 @@ def _write_summary_markdown(
             "length",
             "bad_cases",
             "queries",
+            "queries_with_ground_truth",
+            "no_ground_truth",
             "bad_case_rate",
             "miss_top10",
             "late_hit",
@@ -436,16 +452,18 @@ def _write_summary_markdown(
         _frame_to_text(k32_subtask),
         "```",
         "",
-        "## Page ID Stability Check",
-        "- This checks whether the same page_id is bound to multiple image paths across raw DocumentQA samples.",
-        "- High instability means current page_id/page_idx is context-position based rather than globally stable, which can inflate apparent bad cases.",
+        "## Historical Page ID Stability Baseline",
+        "- This intentionally recomputes the old doc-local page_id semantics to show why the redesign was necessary.",
+        "- High instability here is historical evidence for the previous `doc_id/page_idx` contract, not a defect in the current stable-page-id run.",
         "```text",
         _frame_to_text(stability_view),
         "```",
         "",
         f"## Bad Cases at Recall@{top_k} < 1.0",
-        f"- Bad cases: {bad_cases}/{total_queries} ({bad_case_rate:.2%})",
-        "- Hotspots below are sorted by bad case rate.",
+        f"- Queries with usable ground truth: {queries_with_ground_truth}/{total_queries}",
+        f"- Queries with missing/invalid ground truth: {no_ground_truth}/{total_queries}",
+        f"- True bad cases among queries with usable ground truth: {bad_cases}/{queries_with_ground_truth} ({bad_case_rate:.2%})",
+        "- Hotspots below are sorted by bad case rate over queries with usable ground truth.",
         "```text",
         _frame_to_text(hotspot_summary),
         "```",
@@ -461,6 +479,7 @@ def _write_summary_markdown(
         "- plots/length_k_curves.png",
         "- plots/k32_subtask_comparison.png",
         "- bad_cases_all.csv",
+        "- no_ground_truth_cases.csv",
         "- bad_case_summary.csv",
         "- representative_bad_cases.csv",
     ]
@@ -491,7 +510,11 @@ def main() -> int:
 
     logger.info("构建 bad case 明细与汇总")
     case_frame = _build_case_frame(retrieval_details, page_lookup, top_k=args.top_k)
-    bad_cases = case_frame[case_frame["recall_at_k"] < 1.0].copy()
+    no_ground_truth_cases = case_frame[case_frame["failure_mode"] == "no_ground_truth"].copy()
+    bad_cases = case_frame[
+        (case_frame["num_relevant_pages"] > 0)
+        & (case_frame["recall_at_k"] < 1.0)
+    ].copy()
     bad_case_summary = _build_bad_case_summary(case_frame)
     representatives = _select_representatives(
         bad_cases,
@@ -501,6 +524,7 @@ def main() -> int:
 
     case_frame.to_csv(analysis_dir / "all_cases.csv", index=False, encoding="utf-8-sig")
     bad_cases.to_csv(analysis_dir / "bad_cases_all.csv", index=False, encoding="utf-8-sig")
+    no_ground_truth_cases.to_csv(analysis_dir / "no_ground_truth_cases.csv", index=False, encoding="utf-8-sig")
     bad_case_summary.to_csv(analysis_dir / "bad_case_summary.csv", index=False, encoding="utf-8-sig")
     representatives.to_csv(analysis_dir / "representative_bad_cases.csv", index=False, encoding="utf-8-sig")
     page_id_stability.to_csv(analysis_dir / "page_id_stability_summary.csv", index=False, encoding="utf-8-sig")
