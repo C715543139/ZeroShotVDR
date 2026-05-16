@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -17,7 +18,11 @@ from zeroshot_vdr.contracts import (
     Query,
     RelevanceJudgment,
     build_page_id,
+    build_page_id_from_image,
     build_query_id,
+    extract_source_doc_id,
+    extract_source_page_idx,
+    normalize_image_rel_path,
     normalize_doc_id,
 )
 from zeroshot_vdr.utils import get_project_root
@@ -165,6 +170,56 @@ class DocumentQAAdapter(BaseAdapter):
         return str(self._image_root / image_rel_path)
 
     @staticmethod
+    def _source_raw_doc_name(image_rel_path: str) -> str:
+        normalized_path = normalize_image_rel_path(image_rel_path)
+        return Path(normalized_path).parent.name
+
+    @staticmethod
+    def _build_candidate_page_ids(
+        page_list: list[str],
+        subtask: str,
+        length: str,
+    ) -> tuple[str, ...]:
+        candidate_page_ids: list[str] = []
+        seen: set[str] = set()
+        for fallback_page_idx, rel_path in enumerate(page_list):
+            page_id = build_page_id_from_image(
+                TASK_FAMILY,
+                subtask,
+                length,
+                rel_path,
+                fallback_page_idx=fallback_page_idx,
+            )
+            if page_id in seen:
+                continue
+            seen.add(page_id)
+            candidate_page_ids.append(page_id)
+        return tuple(candidate_page_ids)
+
+    @staticmethod
+    def _build_page_number_to_ids(
+        page_list: list[str],
+        subtask: str,
+        length: str,
+    ) -> dict[int, list[tuple[str, str]]]:
+        page_number_to_ids: dict[int, list[tuple[str, str]]] = defaultdict(list)
+        for fallback_page_idx, rel_path in enumerate(page_list):
+            source_page_idx = extract_source_page_idx(
+                rel_path,
+                fallback_page_idx=fallback_page_idx,
+            )
+            source_doc_id = extract_source_doc_id(rel_path)
+            page_id = build_page_id(
+                TASK_FAMILY,
+                subtask,
+                length,
+                source_doc_id,
+                source_page_idx,
+            )
+            page_number_to_ids[source_page_idx].append((page_id, source_doc_id))
+        return page_number_to_ids
+
+    @staticmethod
     def _build_page_number_map(page_list: list[str]) -> Tuple[Dict[int, int], Dict[int, int]]:
         """构建 pages 的页码映射。
 
@@ -199,11 +254,21 @@ class DocumentQAAdapter(BaseAdapter):
         for sample in self._samples:
             subtask = sample["_subtask"]
             length = sample["_length"]
-            raw_doc_name = sample.get("doc_name", "")
-            doc_id = normalize_doc_id(raw_doc_name)
 
-            for page_idx, rel_path in enumerate(sample.get("page_list", [])):
-                page_id = build_page_id(TASK_FAMILY, subtask, length, doc_id, page_idx)
+            for fallback_page_idx, rel_path in enumerate(sample.get("page_list", [])):
+                source_raw_doc_name = self._source_raw_doc_name(rel_path)
+                source_doc_id = extract_source_doc_id(rel_path)
+                source_page_idx = extract_source_page_idx(
+                    rel_path,
+                    fallback_page_idx=fallback_page_idx,
+                )
+                page_id = build_page_id(
+                    TASK_FAMILY,
+                    subtask,
+                    length,
+                    source_doc_id,
+                    source_page_idx,
+                )
 
                 if page_id in seen:
                     continue
@@ -213,12 +278,12 @@ class DocumentQAAdapter(BaseAdapter):
 
                 yield Page(
                     page_id=page_id,
-                    doc_id=doc_id,
-                    raw_doc_name=raw_doc_name,
+                    doc_id=source_doc_id,
+                    raw_doc_name=source_raw_doc_name,
                     task_family=TASK_FAMILY,
                     subtask=subtask,
                     length=length,
-                    page_idx=page_idx,
+                    page_idx=source_page_idx,
                     image_path=image_path,
                 )
 
@@ -239,6 +304,11 @@ class DocumentQAAdapter(BaseAdapter):
 
             query_id = build_query_id(TASK_FAMILY, subtask, length, query_index)
             question = sample.get("question", "")
+            candidate_page_ids = self._build_candidate_page_ids(
+                sample.get("page_list", []),
+                subtask,
+                length,
+            )
 
             yield Query(
                 query_id=query_id,
@@ -248,6 +318,7 @@ class DocumentQAAdapter(BaseAdapter):
                 task_family=TASK_FAMILY,
                 subtask=subtask,
                 length=length,
+                candidate_page_ids=candidate_page_ids,
             )
 
     def iter_judgments(self) -> Iterator[RelevanceJudgment]:
@@ -269,15 +340,29 @@ class DocumentQAAdapter(BaseAdapter):
             query_index = self._parse_query_index(raw_id, subtask)
             query_id = build_query_id(TASK_FAMILY, subtask, length, query_index)
 
-            # 构建页码 → page_idx 映射
-            page_num_to_idx, _ = self._build_page_number_map(page_list)
+            page_number_to_ids = self._build_page_number_to_ids(page_list, subtask, length)
+            preferred_doc_id = normalize_doc_id(raw_doc_name)
+            seen_pairs: set[tuple[str, str]] = set()
 
             for ans_page_num in ans_page_list:
-                if ans_page_num in page_num_to_idx:
-                    page_idx = page_num_to_idx[ans_page_num]
-                    page_id = build_page_id(
-                        TASK_FAMILY, subtask, length, doc_id, page_idx
-                    )
+                candidates = page_number_to_ids.get(ans_page_num, [])
+                if not candidates:
+                    continue
+
+                preferred_candidates = [
+                    page_id
+                    for page_id, source_doc_id in candidates
+                    if source_doc_id == preferred_doc_id
+                ]
+                resolved_candidates = preferred_candidates or [
+                    page_id for page_id, _ in candidates
+                ]
+
+                for page_id in resolved_candidates:
+                    pair = (query_id, page_id)
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
                     yield RelevanceJudgment(
                         query_id=query_id,
                         page_id=page_id,

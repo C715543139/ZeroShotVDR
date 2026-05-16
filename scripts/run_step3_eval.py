@@ -204,14 +204,6 @@ def _make_run_name(subtasks: list[str], lengths: list[str], max_queries: int | N
     return f"step3_1_{subtask_label}_{length_label}_{query_label}_{timestamp}"
 
 
-def _page_scope_key(page) -> tuple[str, str, str, str]:
-    return (page.task_family, page.subtask, page.length, page.doc_id)
-
-
-def _query_scope_key(query) -> tuple[str, str, str, str]:
-    return (query.task_family, query.subtask, query.length, query.doc_id)
-
-
 def _percentile(values: list[float], q: float) -> float:
     if not values:
         return 0.0
@@ -232,17 +224,17 @@ def _build_scope_stats(
     all_queries,
     selected_queries,
     required_pages,
-    pages_by_scope,
+    query_candidate_counts: dict[str, int],
 ) -> dict[str, Any]:
     all_query_counter = Counter((q.subtask, q.length) for q in all_queries)
     selected_query_counter = Counter((q.subtask, q.length) for q in selected_queries)
     selected_page_counter = Counter((p.subtask, p.length) for p in required_pages)
-    candidate_counts = [len(pages_by_scope[_query_scope_key(q)]) for q in selected_queries]
+    candidate_counts = [query_candidate_counts.get(q.query_id, 0) for q in selected_queries]
 
     return {
         "available_queries": len(all_queries),
         "selected_queries": len(selected_queries),
-        "selected_docs": len({_query_scope_key(q) for q in selected_queries}),
+        "selected_docs": len({(q.subtask, q.length, q.doc_id) for q in selected_queries}),
         "required_pages": len(required_pages),
         "available_queries_by_scope": {
             f"{subtask}/{length}": count
@@ -553,13 +545,21 @@ def main() -> int:
     selected_query_ids = {q.query_id for q in selected_queries}
     query_lookup = {q.query_id: q for q in selected_queries}
 
-    selected_scope_keys = {_query_scope_key(q) for q in selected_queries}
     all_pages = list(adapter.iter_pages())
-    required_pages = [p for p in all_pages if _page_scope_key(p) in selected_scope_keys]
-
-    pages_by_scope: dict[tuple[str, str, str, str], list[Any]] = {}
-    for page in required_pages:
-        pages_by_scope.setdefault(_page_scope_key(page), []).append(page)
+    page_lookup = {page.page_id: page for page in all_pages}
+    query_candidate_counts = {
+        query.query_id: len(query.candidate_page_ids)
+        for query in selected_queries
+    }
+    required_page_ids = {
+        page_id
+        for query in selected_queries
+        for page_id in query.candidate_page_ids
+    }
+    missing_page_records = sorted(required_page_ids - set(page_lookup))
+    if missing_page_records:
+        logger.warning("有 %d 个候选 page_id 未在适配器页面集中出现", len(missing_page_records))
+    required_pages = [page_lookup[page_id] for page_id in sorted(required_page_ids) if page_id in page_lookup]
 
     ground_truth_all = adapter.build_ground_truth()
     ground_truth = {
@@ -567,7 +567,12 @@ def main() -> int:
         for qid in selected_query_ids
     }
 
-    scope_stats = _build_scope_stats(all_queries, selected_queries, required_pages, pages_by_scope)
+    scope_stats = _build_scope_stats(
+        all_queries,
+        selected_queries,
+        required_pages,
+        query_candidate_counts,
+    )
     logger.info(
         "评测范围: %d queries, %d docs, %d pages",
         scope_stats["selected_queries"],
@@ -576,7 +581,7 @@ def main() -> int:
     )
 
     store = IndexStore(str(index_dir))
-    recovered_page_count = store.recover_page_ids([page.page_id for page in required_pages])
+    recovered_page_count = store.recover_page_ids(sorted(required_page_ids))
     if recovered_page_count:
         logger.info(
             "检测到上次中断遗留的 %d 页索引文件，已恢复到 page_ids.json",
@@ -725,7 +730,7 @@ def main() -> int:
                 "length": query.length,
                 "doc_id": query.doc_id,
                 "question": query.text,
-                "candidate_pages": len(pages_by_scope[_query_scope_key(query)]),
+                "candidate_pages": query_candidate_counts.get(query.query_id, 0),
                 "latency_s": latency,
                 "relevant_page_ids": sorted(relevant),
                 "results": [

@@ -18,7 +18,7 @@ Current public interface (from the real implementation):
 Key invariants:
   * `load()` 返回统一的 `{query_id: set[page_id]}`。
   * 输出的 page_id / query_id 必须与 `contracts.py` 的命名规则一致。
-  * DocumentQA 的 `ans_page_list` 应映射到 0-based `page_idx` 对应的 page_id。
+    * DocumentQA 的 `ans_page_list` 应映射到源图片路径中稳定的页号对应的 page_id。
   * `load_by_subtask()` / `load_by_length()` 是 `load()` 的便利包装。
 """
 
@@ -116,8 +116,8 @@ class TestLoad:
         )
         query_id = build_query_id("docqa", "longdocurl", "K4", 0)
         assert gt[query_id] == {
-            build_page_id("docqa", "longdocurl", "K4", "doc001", 0),
-            build_page_id("docqa", "longdocurl", "K4", "doc001", 2),
+            build_page_id("docqa", "longdocurl", "K4", "doc001", 1),
+            build_page_id("docqa", "longdocurl", "K4", "doc001", 3),
         }
 
     def test_duplicate_answer_pages_are_collapsed_by_set_semantics(self, docqa_ground_truth_data_dir):
@@ -137,10 +137,10 @@ class TestLoad:
         )
         query_id = build_query_id("docqa", "longdocurl", "K4", 1)
         assert gt[query_id] == {
-            build_page_id("docqa", "longdocurl", "K4", "doc001", 1)
+            build_page_id("docqa", "longdocurl", "K4", "doc001", 2)
         }
 
-    def test_slidevqa_filename_pattern_maps_slide_number_to_zero_based_page_idx(self, docqa_ground_truth_data_dir):
+    def test_slidevqa_filename_pattern_maps_slide_number_to_stable_page_idx(self, docqa_ground_truth_data_dir):
         gt = _load_ground_truth(
             docqa_ground_truth_data_dir,
             subtasks=["longdocurl", "slidevqa"],
@@ -148,7 +148,7 @@ class TestLoad:
         )
         query_id = build_query_id("docqa", "slidevqa", "K8", 0)
         assert gt[query_id] == {
-            build_page_id("docqa", "slidevqa", "K8", "deck_intro", 1)
+            build_page_id("docqa", "slidevqa", "K8", "deck_intro", 2)
         }
 
     def test_explicit_task_family_docqa_does_not_change_result(self, docqa_ground_truth_data_dir):

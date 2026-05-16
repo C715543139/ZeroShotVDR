@@ -145,6 +145,14 @@ class TestQuery:
         q = self._make_query(length="K128")
         assert q.length == "K128"
 
+    def test_candidate_page_ids_defaults_to_empty_tuple(self):
+        q = self._make_query()
+        assert q.candidate_page_ids == ()
+
+    def test_candidate_page_ids_can_be_provided(self):
+        q = self._make_query(candidate_page_ids=("p1", "p2"))
+        assert q.candidate_page_ids == ("p1", "p2")
+
 
 # ===========================================================================
 # RetrievalResult 数据类

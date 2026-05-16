@@ -6,7 +6,11 @@ from zeroshot_vdr.contracts import (
     RelevanceJudgment,
     RetrievalResult,
     build_page_id,
+    build_page_id_from_image,
     build_query_id,
+    extract_source_doc_id,
+    extract_source_page_idx,
+    normalize_image_rel_path,
     normalize_doc_id,
 )
 from zeroshot_vdr.retrieval import (
@@ -30,7 +34,11 @@ __all__: list[str] = [
     "RelevanceJudgment",
     "RetrievalResult",
     "build_page_id",
+    "build_page_id_from_image",
     "build_query_id",
+    "extract_source_doc_id",
+    "extract_source_page_idx",
+    "normalize_image_rel_path",
     "normalize_doc_id",
     "QueryEncoder",
     "RetrievalPipeline",

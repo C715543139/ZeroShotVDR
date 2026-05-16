@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 import re
 
 
@@ -44,6 +45,7 @@ class Query:
     task_family: str  # L1 任务族
     subtask: str  # L2 子任务
     length: str  # L3 长度档位
+    candidate_page_ids: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -162,3 +164,55 @@ def build_query_id(
         稳定的 query_id 字符串
     """
     return f"{task_family}/{subtask}_{length}/q{query_index:0>3d}"
+
+
+def normalize_image_rel_path(image_rel_path: str) -> str:
+    """规范化原始图片相对路径。"""
+    return image_rel_path.strip().replace("\\", "/")
+
+
+def extract_source_doc_id(image_rel_path: str) -> str:
+    """从原始图片路径提取稳定的源文档 ID。"""
+    normalized_path = normalize_image_rel_path(image_rel_path)
+    path = PurePosixPath(normalized_path)
+    if len(path.parts) >= 2:
+        return normalize_doc_id(path.parent.name)
+    return normalize_doc_id(path.stem)
+
+
+def extract_source_page_idx(
+    image_rel_path: str,
+    fallback_page_idx: int | None = None,
+) -> int:
+    """从原始图片路径提取稳定的源页号。"""
+    stem = PurePosixPath(normalize_image_rel_path(image_rel_path)).stem
+
+    patterns = [
+        r"_page(\d+)$",
+        r"-(\d+)-\d+$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, stem)
+        if match:
+            return int(match.group(1))
+
+    if fallback_page_idx is not None:
+        return fallback_page_idx
+
+    raise ValueError(f"无法从图片路径提取页号: {image_rel_path}")
+
+
+def build_page_id_from_image(
+    task_family: str,
+    subtask: str,
+    length: str,
+    image_rel_path: str,
+    fallback_page_idx: int | None = None,
+) -> str:
+    """从稳定的原始图片路径构造 page_id。"""
+    source_doc_id = extract_source_doc_id(image_rel_path)
+    source_page_idx = extract_source_page_idx(
+        image_rel_path,
+        fallback_page_idx=fallback_page_idx,
+    )
+    return build_page_id(task_family, subtask, length, source_doc_id, source_page_idx)

@@ -42,6 +42,23 @@ class TestEncodeQuery:
 
 
 class TestGenerateCandidates:
+    def test_candidate_page_ids_override_doc_scope_when_present(self, pipeline, query_embedding):
+        from zeroshot_vdr.contracts import Query
+
+        query = Query(
+            query_id="docqa/longdocurl_K4/q010",
+            text="explicit candidate scope",
+            doc_id="ghost_doc",
+            raw_doc_name="ghost_doc",
+            task_family="docqa",
+            subtask="longdocurl",
+            length="K4",
+            candidate_page_ids=(PAGE_ID_A2, PAGE_ID_B0),
+        )
+
+        candidates = pipeline.generate_candidates(query, query_embedding)
+        assert candidates == [PAGE_ID_A2, PAGE_ID_B0]
+
     def test_default_scope_is_pages_of_query_doc(self, pipeline, sample_query, query_embedding):
         candidates = pipeline.generate_candidates(sample_query, query_embedding)
         assert set(candidates) == {PAGE_ID_A0, PAGE_ID_A1, PAGE_ID_A2}

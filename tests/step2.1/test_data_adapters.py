@@ -24,6 +24,8 @@ from zeroshot_vdr.contracts import (
     RelevanceJudgment,
     build_page_id,
     build_query_id,
+    extract_source_doc_id,
+    extract_source_page_idx,
     normalize_doc_id,
 )
 from zeroshot_vdr.data.adapters import DocumentQAAdapter
@@ -158,15 +160,15 @@ class TestIterPages:
                 f"Duplicate page_idx for {key}: {idxs}"
             )
 
-    def test_page_idx_starts_at_zero_per_doc(self, pages):
-        from collections import defaultdict
-
-        min_idx: dict[str, int] = defaultdict(lambda: 10**9)
+    def test_page_idx_matches_source_image_page_number(self, pages):
         for page in pages:
-            min_idx[page.doc_id] = min(min_idx[page.doc_id], page.page_idx)
+            expected_idx = extract_source_page_idx(page.image_path)
+            assert page.page_idx == expected_idx
 
-        for doc_id, m in min_idx.items():
-            assert m == 0, f"doc_id={doc_id!r} min page_idx={m}, expected 0"
+    def test_doc_id_matches_source_image_document(self, pages):
+        for page in pages:
+            expected_doc_id = extract_source_doc_id(page.image_path)
+            assert page.doc_id == expected_doc_id
 
     # --- page_id ---
 
@@ -276,6 +278,15 @@ class TestIterQueries:
     def test_query_id_is_non_empty_string(self, queries):
         for q in queries:
             assert isinstance(q.query_id, str) and q.query_id
+
+    def test_candidate_page_ids_are_non_empty(self, queries):
+        for q in queries:
+            assert len(q.candidate_page_ids) >= 1
+
+    def test_candidate_page_ids_reference_real_pages(self, queries, adapter):
+        page_ids = {page.page_id for page in adapter.iter_pages()}
+        for q in queries:
+            assert set(q.candidate_page_ids).issubset(page_ids)
 
     def test_query_id_starts_with_docqa(self, queries):
         for q in queries:
