@@ -147,6 +147,16 @@ def parse_args() -> argparse.Namespace:
 
     # 日志
     parser.add_argument(
+        "--resume", action="store_true",
+        help="从上次中断处续跑（自动检测 _checkpoint.json）",
+    )
+    parser.add_argument(
+        "--no-resume", action="store_true",
+        help="忽略已有 checkpoint，从头重新跑",
+    )
+
+    # 日志
+    parser.add_argument(
         "--log-level", type=str, default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
@@ -415,56 +425,57 @@ def _encode_pages_worker(payload: dict) -> dict:
 # ===========================================================================
 
 
-def _save_trace_jsonl(
+# ===========================================================================
+# Checkpoint / Resume
+# ===========================================================================
+
+
+def _checkpoint_path(run_dir: Path) -> Path:
+    return run_dir / "_checkpoint.json"
+
+
+def _load_checkpoint(run_dir: Path) -> dict[str, Any] | None:
+    """加载断点文件，不存在则返回 None。"""
+    cp_path = _checkpoint_path(run_dir)
+    if not cp_path.exists():
+        return None
+    try:
+        return json.loads(cp_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_checkpoint(
     run_dir: Path,
-    queries: list,
-    outputs: list[TwoStageOutput],
-    ground_truth: dict[str, set[str]],
+    completed_ids: list[str],
+    retrieval_results: dict[str, list[str]],
+    latencies: list[float],
+    trace_lines: list[str],
+    queries_done: int,
+    queries_total: int,
+    elapsed: float = 0.0,
 ) -> None:
-    """保存 per-query trace 为 JSONL 格式。"""
-    trace_path = run_dir / "phase4_trace.jsonl"
-    lines: list[str] = []
+    """保存断点信息。"""
+    cp = {
+        "completed_query_ids": completed_ids,
+        "retrieval_results": retrieval_results,
+        "latencies": latencies,
+        "trace_lines": trace_lines,
+        "queries_done": queries_done,
+        "queries_total": queries_total,
+        "elapsed_so_far": elapsed,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _checkpoint_path(run_dir).write_text(
+        json.dumps(cp, ensure_ascii=False), encoding="utf-8"
+    )
 
-    for query, output in zip(queries, outputs):
-        trace = output.trace
-        gt_pages = ground_truth.get(query.query_id, set())
-        pred_pages = [r.page_id for r in output.results]
 
-        record = {
-            "query_id": query.query_id,
-            "task_family": query.task_family,
-            "subtask": query.subtask,
-            "length": query.length,
-            "method": trace.method,
-            "universe_size": trace.universe_size,
-            "coarse_top_n": trace.coarse_top_n,
-            "expanded_candidate_count": trace.expanded_candidate_count,
-            "neighbor_added_count": trace.neighbor_added_count,
-            "coarse_ms": round(trace.coarse_ms, 3),
-            "rerank_ms": round(trace.rerank_ms, 3),
-            "total_ms": round(trace.total_ms, 3),
-            "top1_coarse_score": (
-                round(trace.top1_coarse_score, 6)
-                if trace.top1_coarse_score is not None else None
-            ),
-            "topn_coarse_score": (
-                round(trace.topn_coarse_score, 6)
-                if trace.topn_coarse_score is not None else None
-            ),
-            "coarse_margin": (
-                round(trace.coarse_margin, 6)
-                if trace.coarse_margin is not None else None
-            ),
-            "adaptive_expanded": trace.adaptive_expanded,
-            "hit_at_1": any(p in gt_pages for p in pred_pages[:1]),
-            "hit_at_5": any(p in gt_pages for p in pred_pages[:5]),
-            "hit_at_10": any(p in gt_pages for p in pred_pages[:10]),
-            "gt_page_ids": sorted(gt_pages),
-            "pred_page_ids": pred_pages[:10],
-        }
-        lines.append(json.dumps(record, ensure_ascii=False))
-
-    trace_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _clear_checkpoint(run_dir: Path) -> None:
+    """完成后清除断点文件。"""
+    cp_path = _checkpoint_path(run_dir)
+    if cp_path.exists():
+        cp_path.unlink()
 
 
 # ===========================================================================
@@ -614,28 +625,129 @@ def main() -> int:
         neighbor_seed_n=args.neighbor_seed_n,
     )
 
-    # ---- 检索循环 ----
+    # ---- 检索循环（支持断点续跑） ----
     retrieval_results: dict[str, list[str]] = {}
     query_latencies: list[float] = []
     all_outputs: list[TwoStageOutput] = []
+    trace_lines: list[str] = []
+
+    # 尝试加载 checkpoint
+    checkpoint = None
+    prev_time = 0.0
+    if not args.no_resume:
+        checkpoint = _load_checkpoint(run_dir)
+    if checkpoint is not None:
+        retrieval_results = checkpoint.get("retrieval_results", {})
+        query_latencies = checkpoint.get("latencies", [])
+        trace_lines = checkpoint.get("trace_lines", [])
+        completed_ids = set(checkpoint.get("completed_query_ids", []))
+        done_count = checkpoint.get("queries_done", 0)
+        total_count = checkpoint.get("queries_total", len(selected_queries))
+        prev_time = checkpoint.get("elapsed_so_far", 0.0)
+        logger.info(
+            "从断点续跑: %d/%d queries 已完成", done_count, total_count,
+        )
+    else:
+        completed_ids: set[str] = set()
+        done_count = 0
+        total_count = len(selected_queries)
 
     total_start = time.perf_counter()
-    for query in selected_queries:
-        output = retriever.retrieve(query, top_k=max_k)
-        latency = output.trace.total_ms / 1000.0  # ms → s
-        query_latencies.append(latency)
+    save_interval = max(1, min(50, len(selected_queries) // 20))  # 每 ~5% 存一次
 
+    for i, query in enumerate(selected_queries):
+        if query.query_id in completed_ids:
+            continue  # 跳过已完成的 query
+
+        output = retriever.retrieve(query, top_k=max_k)
+        latency = output.trace.total_ms / 1000.0
+        query_latencies.append(latency)
         retrieval_results[query.query_id] = [r.page_id for r in output.results]
         all_outputs.append(output)
+        completed_ids.add(query.query_id)
+        done_count += 1
+
+        # 增量保存 trace 行
+        if args.trace_enabled:
+            gt_pages = ground_truth.get(query.query_id, set())
+            pred_pages = [r.page_id for r in output.results]
+            trace = output.trace
+            record = {
+                "query_id": query.query_id,
+                "task_family": query.task_family,
+                "subtask": query.subtask,
+                "length": query.length,
+                "method": trace.method,
+                "universe_size": trace.universe_size,
+                "coarse_top_n": trace.coarse_top_n,
+                "expanded_candidate_count": trace.expanded_candidate_count,
+                "neighbor_added_count": trace.neighbor_added_count,
+                "coarse_ms": round(trace.coarse_ms, 3),
+                "rerank_ms": round(trace.rerank_ms, 3),
+                "total_ms": round(trace.total_ms, 3),
+                "top1_coarse_score": (
+                    round(trace.top1_coarse_score, 6)
+                    if trace.top1_coarse_score is not None else None
+                ),
+                "topn_coarse_score": (
+                    round(trace.topn_coarse_score, 6)
+                    if trace.topn_coarse_score is not None else None
+                ),
+                "coarse_margin": (
+                    round(trace.coarse_margin, 6)
+                    if trace.coarse_margin is not None else None
+                ),
+                "adaptive_expanded": trace.adaptive_expanded,
+                "hit_at_1": any(p in gt_pages for p in pred_pages[:1]),
+                "hit_at_5": any(p in gt_pages for p in pred_pages[:5]),
+                "hit_at_10": any(p in gt_pages for p in pred_pages[:10]),
+                "gt_page_ids": sorted(gt_pages),
+                "pred_page_ids": pred_pages[:10],
+            }
+            trace_lines.append(json.dumps(record, ensure_ascii=False))
+
+        # 定期保存 checkpoint
+        if done_count % save_interval == 0:
+            _save_checkpoint(
+                run_dir,
+                completed_ids=sorted(completed_ids),
+                retrieval_results=retrieval_results,
+                latencies=query_latencies,
+                trace_lines=trace_lines,
+                queries_done=done_count,
+                queries_total=len(selected_queries),
+                elapsed=prev_time + (time.perf_counter() - total_start),
+            )
+            logger.debug(
+                "checkpoint: %d/%d queries", done_count, len(selected_queries),
+            )
+
+    # 最终保存一次 checkpoint
+    _save_checkpoint(
+        run_dir,
+        completed_ids=sorted(completed_ids),
+        retrieval_results=retrieval_results,
+        latencies=query_latencies,
+        trace_lines=trace_lines,
+        queries_done=done_count,
+        queries_total=len(selected_queries),
+        elapsed=prev_time + (time.perf_counter() - total_start),
+    )
+
     total_time = time.perf_counter() - total_start
 
     # ---- 指标计算 ----
     tables = _build_metrics_tables(retrieval_results, ground_truth, query_lookup, k_values)
     _save_metrics_tables(run_dir, tables)
 
-    # ---- Trace ----
-    if args.trace_enabled:
-        _save_trace_jsonl(run_dir, selected_queries, all_outputs, ground_truth)
+    # ---- Trace 输出 ----
+    if args.trace_enabled and trace_lines:
+        trace_path = run_dir / "phase4_trace.jsonl"
+        trace_path.write_text("\n".join(trace_lines) + "\n", encoding="utf-8")
+        logger.info("trace 已保存: %s (%d 行)", trace_path, len(trace_lines))
+
+    # ---- 清除 checkpoint（正常完成） ----
+    _clear_checkpoint(run_dir)
 
     # ---- 汇总 ----
     query_candidate_counts = {
@@ -643,11 +755,15 @@ def main() -> int:
     }
     candidate_counts = list(query_candidate_counts.values())
 
+    # 合并 checkpoint 中之前累积的时间
+    prev_time_val = checkpoint.get("elapsed_so_far", 0.0) if checkpoint else 0.0
+
     run_summary: dict[str, Any] = {
         "run_name": run_name,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "phase4": True,
         "method": args.method,
+        "resumed": checkpoint is not None,
         "parameters": {
             "coarse_top_n": args.coarse_top_n,
             "min_candidates": args.min_candidates,
@@ -671,7 +787,9 @@ def main() -> int:
             "mean": mean(candidate_counts) if candidate_counts else 0.0,
         },
         "retrieval": {
-            "total_time_s": total_time,
+            "total_time_s": total_time + prev_time_val,
+            "session_time_s": total_time,
+            "prev_time_s": prev_time_val,
             "avg_latency_s": mean(query_latencies) if query_latencies else 0.0,
             "p50_latency_s": _percentile(query_latencies, 0.50),
             "p95_latency_s": _percentile(query_latencies, 0.95),
