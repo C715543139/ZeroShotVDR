@@ -85,11 +85,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir", type=str, default=None,
-        help="输出根目录",
-    )
-    parser.add_argument(
-        "--run-name", type=str, default=None,
-        help="输出子目录名；默认自动生成",
+        help="输出根目录；默认 outputs/eval_reports",
     )
     parser.add_argument(
         "--device", type=str, default=None,
@@ -148,11 +144,7 @@ def parse_args() -> argparse.Namespace:
     # 日志
     parser.add_argument(
         "--resume", action="store_true",
-        help="从上次中断处续跑（自动检测 _checkpoint.json）",
-    )
-    parser.add_argument(
-        "--no-resume", action="store_true",
-        help="忽略已有 checkpoint，从头重新跑",
+        help="从上次中断处续跑；不指定则覆盖重新运行",
     )
 
     # 日志
@@ -221,19 +213,18 @@ def _parse_torch_dtype(dtype_name: str | None):
     return mapping[normalized]
 
 
-def _make_run_name(
-    subtasks: list[str],
-    lengths: list[str],
-    method: str,
-    coarse_top_n: int,
-    max_queries: int | None,
-) -> str:
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    subtask_label = "-".join(subtasks[:3]) if len(subtasks) <= 3 else f"{subtasks[0]}-plus"
-    length_label = "-".join(lengths[:3]) if len(lengths) <= 3 else f"{lengths[0]}-plus"
-    query_label = f"q{max_queries}" if max_queries is not None else "qall"
-    topn_label = f"top{coarse_top_n}" if method == "fixed_topn" else method
-    return f"phase4_{topn_label}_{subtask_label}_{length_label}_{query_label}_{timestamp}"
+def _resolve_run_dir(
+    args: argparse.Namespace,
+    evaluation_cfg: dict,
+) -> Path:
+    """根据 method 确定固定输出目录。
+
+    模式: outputs/eval_reports/phase4_{method}/
+    """
+    output_root = resolve_path(
+        args.output_dir or evaluation_cfg.get("output_dir", "outputs/eval_reports")
+    )
+    return output_root / f"phase4_{args.method}"
 
 
 # ===========================================================================
@@ -509,13 +500,19 @@ def main() -> int:
     index_dir = resolve_path(
         args.index_dir or index_cfg.get("dir", "data/processed/index")
     )
-    output_root = resolve_path(
-        args.output_dir or evaluation_cfg.get("output_dir", "outputs/eval_reports")
-    )
-    run_name = args.run_name or _make_run_name(
-        subtasks, lengths, args.method, args.coarse_top_n, args.max_queries,
-    )
-    run_dir = output_root / run_name
+    run_dir = _resolve_run_dir(args, evaluation_cfg)
+
+    # ---- 非 resume 模式：清理旧结果 ----
+    if not args.resume:
+        cp_path = _checkpoint_path(run_dir)
+        if cp_path.exists():
+            cp_path.unlink()
+            logger.info("已清除旧 checkpoint，将重新运行")
+        if run_dir.exists():
+            import shutil
+            shutil.rmtree(run_dir)
+            logger.info("已清除旧输出目录: %s", run_dir)
+
     run_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Phase 4 评测开始: method=%s subtasks=%s lengths=%s", args.method, subtasks, lengths)
@@ -634,7 +631,7 @@ def main() -> int:
     # 尝试加载 checkpoint
     checkpoint = None
     prev_time = 0.0
-    if not args.no_resume:
+    if args.resume:
         checkpoint = _load_checkpoint(run_dir)
     if checkpoint is not None:
         retrieval_results = checkpoint.get("retrieval_results", {})
@@ -759,7 +756,7 @@ def main() -> int:
     prev_time_val = checkpoint.get("elapsed_so_far", 0.0) if checkpoint else 0.0
 
     run_summary: dict[str, Any] = {
-        "run_name": run_name,
+        "run_dir": str(run_dir),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "phase4": True,
         "method": args.method,
