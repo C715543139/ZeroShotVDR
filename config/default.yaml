@@ -33,6 +33,32 @@ retrieval:
   score_batch_size: 64                        # MaxSim 时每批处理页面数
   candidate_strategy: "full"                  # baseline=full; Phase 4 可切换
 
+  # ------------------------------------------------------------------
+  # Phase 4: query-adaptive two-stage coarse-to-fine retrieval
+  # ------------------------------------------------------------------
+  phase4:
+    enabled: false                            # 默认关闭，保持 Phase 3 baseline 不变
+    method: fixed_topn                        # fixed_topn / adaptive / adaptive_neighbors
+
+    # ---- Adaptive top-N ----
+    min_candidates: 32
+    max_candidates: 128
+    coarse_top_n: 64
+    base_ratio: 0.20
+    flat_margin: 0.035
+
+    # ---- Neighbor expansion ----
+    neighbor_window: 0                        # 0 = 不扩展邻页
+    neighbor_seed_n: 8
+
+    # ---- Query scope & cache ----
+    use_query_scope: true                     # candidate_page_ids 作为 query-specific universe
+    use_mean_pool_cache: false
+    mean_pool_cache_dir: "outputs/cache/mean_pool"
+
+    # ---- Trace & profiling ----
+    trace_enabled: false
+
 # ===== 评测配置 =====
 evaluation:
   k_values: [1, 3, 5, 10]
