@@ -229,37 +229,65 @@ class TwoStageRetriever:
     - coarse 阶段在 universe 内用 mean-pool 快速粗筛
     - rerank 阶段只对 coarse 选出的候选做完整 MaxSim
 
+    支持三种 method:
+    - ``fixed_topn``: 固定 coarse top-N
+    - ``adaptive``: 自适应 top-N（根据分数分布）
+    - ``adaptive_neighbors``: 自适应 + 邻页扩展
+
     Parameters
     ----------
     base_pipeline : RetrievalPipeline
         Phase 3 的检索流水线，提供 encode_query / score_candidates
     index_store : IndexStore
         索引存储
+    method : str
+        "fixed_topn" / "adaptive" / "adaptive_neighbors"
     coarse_top_n : int
         固定 top-N（method=fixed_topn 时使用）
-    method : str
-        方法标识: "fixed_topn"
+    min_candidates : int
+        adaptive 下限
+    max_candidates : int
+        adaptive 上限
+    base_ratio : float
+        adaptive 基础比例
+    flat_margin : float
+        adaptive 平坦阈值
+    neighbor_window : int
+        邻页窗口大小；0 表示不扩展
+    neighbor_seed_n : int
+        对前 seed_n 个 coarse page 扩展邻页
     """
 
     def __init__(
         self,
         base_pipeline,
         index_store,
-        coarse_top_n: int = 64,
         method: str = "fixed_topn",
+        coarse_top_n: int = 64,
+        min_candidates: int = 32,
+        max_candidates: int = 128,
+        base_ratio: float = 0.20,
+        flat_margin: float = 0.035,
+        neighbor_window: int = 0,
+        neighbor_seed_n: int = 8,
     ):
         self.pipeline = base_pipeline
         self.index_store = index_store
-        self.coarse_top_n = coarse_top_n
         self.method = method
+        self.coarse_top_n = coarse_top_n
+        self.min_candidates = min_candidates
+        self.max_candidates = max_candidates
+        self.base_ratio = base_ratio
+        self.flat_margin = flat_margin
+        self.neighbor_window = neighbor_window
+        self.neighbor_seed_n = neighbor_seed_n
 
-        # 配置参数（后续 Stage 扩展）
-        self.min_candidates: int = 32
-        self.max_candidates: int = 128
-        self.base_ratio: float = 0.20
-        self.flat_margin: float = 0.035
-        self.neighbor_window: int = 0
-        self.neighbor_seed_n: int = 8
+        # 校验 method
+        _valid_methods = {"fixed_topn", "adaptive", "adaptive_neighbors"}
+        if method not in _valid_methods:
+            raise ValueError(
+                f"不支持的 method: {method}，可选: {_valid_methods}"
+            )
 
     # ------------------------------------------------------------------
     # 主检索接口
@@ -301,7 +329,6 @@ class TwoStageRetriever:
         page_means, pids = self.index_store.get_mean_pooled_view(universe_ids)
 
         if page_means.numel() == 0:
-            # 空 universe → 直接返回空结果
             trace = TwoStageTrace(
                 query_id=getattr(query, "query_id", None),
                 universe_size=len(universe_ids),
@@ -311,22 +338,60 @@ class TwoStageRetriever:
 
         coarse_scores = score_mean_pool(query_emb, page_means)
 
-        # 选择 coarse top-N（当前为 fixed）
-        selected_n = self.coarse_top_n
+        # ---- 选择 coarse top-N ----
+        sorted_scores = torch.sort(
+            coarse_scores.detach().float(), descending=True
+        ).values
+
+        if self.method == "fixed_topn":
+            selected_n = self.coarse_top_n
+            adaptive_expanded = False
+        elif self.method in ("adaptive", "adaptive_neighbors"):
+            selected_n = choose_adaptive_top_n(
+                scores=coarse_scores,
+                universe_size=len(pids),
+                min_n=self.min_candidates,
+                max_n=self.max_candidates,
+                base_ratio=self.base_ratio,
+                flat_margin=self.flat_margin,
+            )
+            # 判断是否触发了扩张
+            base_n = int(round(len(pids) * self.base_ratio))
+            base_n = max(self.min_candidates, min(base_n, self.max_candidates, len(pids)))
+            adaptive_expanded = selected_n > base_n
+        else:
+            raise ValueError(f"不支持的 method: {self.method}")
+
         coarse_ids = select_topn_by_scores(
             page_ids=pids,
             scores=coarse_scores,
             top_n=selected_n,
         )
+
+        # ---- Neighbor expansion（method=adaptive_neighbors 时） ----
+        neighbor_added_count = 0
+        if self.method == "adaptive_neighbors" and self.neighbor_window > 0:
+            from zeroshot_vdr.advanced.neighbors import expand_neighbors
+
+            expanded_ids = expand_neighbors(
+                coarse_ids=coarse_ids,
+                universe_ids=universe_ids,
+                window=self.neighbor_window,
+                seed_n=self.neighbor_seed_n,
+            )
+            neighbor_added_count = len(expanded_ids) - len(coarse_ids)
+            rerank_ids = expanded_ids
+        else:
+            rerank_ids = coarse_ids
+
         coarse_ms = (time.perf_counter() - coarse_start) * 1000
 
         # ---- 阶段 2: full MaxSim rerank ----
         rerank_start = time.perf_counter()
         scores, scored_ids = self.pipeline.score_candidates(
             query_emb=query_emb,
-            candidate_ids=coarse_ids,
+            candidate_ids=rerank_ids,
         )
-        # 结果组装
         results = self.pipeline._assemble_results(
             query_id=getattr(query, "query_id", ""),
             scores=scores,
@@ -337,16 +402,27 @@ class TwoStageRetriever:
 
         total_ms = (time.perf_counter() - t0) * 1000
 
+        # ---- Trace ----
         trace = TwoStageTrace(
             query_id=getattr(query, "query_id", None),
             universe_size=len(universe_ids),
             coarse_top_n=len(coarse_ids),
-            expanded_candidate_count=len(coarse_ids),
-            neighbor_added_count=0,
+            expanded_candidate_count=len(rerank_ids),
+            neighbor_added_count=neighbor_added_count,
             coarse_ms=coarse_ms,
             rerank_ms=rerank_ms,
             total_ms=total_ms,
             method=self.method,
         )
+
+        # adaptive trace 字段
+        if self.method in ("adaptive", "adaptive_neighbors") and len(sorted_scores) > 0:
+            trace.top1_coarse_score = float(sorted_scores[0])
+            if selected_n <= len(sorted_scores):
+                trace.topn_coarse_score = float(sorted_scores[selected_n - 1])
+                trace.coarse_margin = float(
+                    sorted_scores[0] - sorted_scores[selected_n - 1]
+                )
+            trace.adaptive_expanded = adaptive_expanded
 
         return TwoStageOutput(results=results, trace=trace)

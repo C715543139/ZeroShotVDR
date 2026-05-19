@@ -197,6 +197,12 @@ class TestTwoStageRetriever:
         assert retriever.coarse_top_n == 32
         assert retriever.method == "fixed_topn"
 
+    def test_invalid_method_raises(self):
+        pipeline = FakePipeline()
+        store = FakeIndexStore()
+        with pytest.raises(ValueError, match="不支持的 method"):
+            TwoStageRetriever(pipeline, store, method="invalid")
+
     def test_retrieve_basic(self):
         pipeline = FakePipeline()
         store = FakeIndexStore()
@@ -278,3 +284,82 @@ class TestTwoStageRetriever:
         output = retriever.retrieve(q, top_k=5)
         assert output.results == []
         assert output.trace.universe_size == 0
+
+    # ---- adaptive 测试 ----
+
+    def test_adaptive_method_runs(self):
+        pipeline = FakePipeline()
+        store = FakeIndexStore()
+        universe = [f"doc/p{i}" for i in range(100)]
+        store.set_universe(universe)
+
+        retriever = TwoStageRetriever(
+            pipeline, store,
+            method="adaptive",
+            min_candidates=10,
+            max_candidates=50,
+            base_ratio=0.20,
+        )
+        q = make_query(candidate_page_ids=universe)
+        output = retriever.retrieve(q, top_k=5)
+
+        assert output.trace.method == "adaptive"
+        assert output.trace.coarse_top_n >= 10
+        assert output.trace.coarse_top_n <= 50
+
+    def test_adaptive_trace_fields(self):
+        pipeline = FakePipeline()
+        store = FakeIndexStore()
+        universe = [f"doc/p{i}" for i in range(100)]
+        store.set_universe(universe)
+
+        retriever = TwoStageRetriever(
+            pipeline, store, method="adaptive",
+        )
+        q = make_query(candidate_page_ids=universe)
+        output = retriever.retrieve(q, top_k=5)
+
+        trace = output.trace
+        assert trace.top1_coarse_score is not None
+        assert trace.topn_coarse_score is not None
+        assert trace.coarse_margin is not None
+
+    # ---- neighbor 测试 ----
+
+    def test_neighbor_method_runs(self):
+        pipeline = FakePipeline()
+        store = FakeIndexStore()
+        universe = [f"doc/p{i}" for i in range(50)]
+        store.set_universe(universe)
+
+        retriever = TwoStageRetriever(
+            pipeline, store,
+            method="adaptive_neighbors",
+            neighbor_window=1,
+            neighbor_seed_n=4,
+            coarse_top_n=10,
+        )
+        q = make_query(candidate_page_ids=universe)
+        output = retriever.retrieve(q, top_k=5)
+
+        assert output.trace.method == "adaptive_neighbors"
+        # neighbor may add pages
+        assert output.trace.expanded_candidate_count >= output.trace.coarse_top_n
+
+    def test_neighbor_window_zero_no_expand(self):
+        pipeline = FakePipeline()
+        store = FakeIndexStore()
+        universe = [f"doc/p{i}" for i in range(50)]
+        store.set_universe(universe)
+
+        retriever = TwoStageRetriever(
+            pipeline, store,
+            method="adaptive_neighbors",
+            neighbor_window=0,
+            coarse_top_n=10,
+        )
+        q = make_query(candidate_page_ids=universe)
+        output = retriever.retrieve(q, top_k=5)
+
+        assert output.trace.neighbor_added_count == 0
+        assert output.trace.coarse_top_n == output.trace.expanded_candidate_count
