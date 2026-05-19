@@ -147,7 +147,9 @@ def score_mean_pool(
         shape ``[n_pages]``，每页一个 cosine 分数
     """
     query_mean = mean_pool_query(query_emb)
-    page_means = F.normalize(page_means, dim=-1)
+    # 对齐 dtype：query 可能是 bfloat16，page_means 可能是 float16
+    query_mean = query_mean.to(dtype=page_means.dtype)
+    page_means = F.normalize(page_means.float(), dim=-1).to(page_means.dtype)
     return page_means @ query_mean
 
 
