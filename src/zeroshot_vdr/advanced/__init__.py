@@ -7,10 +7,9 @@
 - profiling: per-query trace 与 slice-level 分析
 """
 
-from zeroshot_vdr.advanced.two_stage import TwoStageRetriever, TwoStageOutput, TwoStageTrace
+# 各子模块在对应 Stage 中逐步实现，导入随实现推进逐步开放。
+from zeroshot_vdr.advanced import neighbors  # noqa: F401
 
-__all__ = [
-    "TwoStageRetriever",
-    "TwoStageOutput",
-    "TwoStageTrace",
-]
+# 以下导入在对应模块实现后开放：
+# from zeroshot_vdr.advanced.two_stage import TwoStageRetriever, TwoStageOutput, TwoStageTrace  # Stage 4
+# from zeroshot_vdr.advanced.profiling import ...  # Stage 9
