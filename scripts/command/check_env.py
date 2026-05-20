@@ -1,9 +1,9 @@
 """环境验证脚本。运行：python scripts/command/check_env.py
 
 .. note::
-   导入顺序很重要：pyarrow（datasets/pandas 的依赖）与 torch 在 Windows 上存在
-   C++ DLL 冲突（access violation）。必须先导入 datasets/pandas/pyarrow，再导入
-   torch，否则 pyarrow 初始化时会崩溃。
+   导入顺序很重要：pyarrow（datasets/pandas 的依赖）与 torch 存在
+   C++ 原生库加载顺序约束。必须先导入 datasets/pandas/pyarrow，再导入
+   torch，否则可能导致进程崩溃。
 """
 import os
 import sys
@@ -39,10 +39,9 @@ def check_python():
 def check_imports_lightweight():
     """先导入不依赖 torch/CUDA 的轻量包。
 
-    Windows 上 pyarrow（datasets/pandas 的依赖）与 torch 的 C++ 原生库存在
-    DLL 冲突（access violation）。若 torch 先于 pyarrow 加载，pyarrow 初始化
-    时会发生内存访问违例崩溃。因此必须先将 datasets/pandas/pyarrow 导入完毕，
-    再加载 torch。
+    pyarrow（datasets/pandas 的依赖）与 torch 的 C++ 原生库存在加载顺序约束。
+    若 torch 先于 pyarrow 加载，pyarrow 初始化时可能崩溃。
+    因此必须先将 datasets/pandas/pyarrow 导入完毕，再加载 torch。
     """
     pkgs = [
         "numpy", "yaml", "tqdm", "rich",
@@ -57,8 +56,8 @@ def check_imports_lightweight():
 
 
 def check_torch_and_ml():
-    """在轻量包加载之后再导入 torch 及 ML 栈，避免 pyarrow DLL 冲突"""
-    import torch  # noqa: F811  -- 延迟导入以避免 pyarrow DLL 冲突
+    """在轻量包加载之后再导入 torch 及 ML 栈，避免 pyarrow 加载顺序冲突"""
+    import torch  # noqa: F811  -- 延迟导入以避免 pyarrow 加载顺序冲突
     assert torch.cuda.is_available(), "CUDA 不可用，请检查驱动与 PyTorch 安装"
     print(f"[PASS] CUDA {torch.version.cuda} 可用")
     print(f"       GPU: {torch.cuda.get_device_name(0)}")

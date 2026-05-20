@@ -3,7 +3,7 @@
 
 所有指标函数接受标准化输入 ``(retrieved_page_ids, relevant_page_ids, k)``，
 与具体数据集解耦。参数类型均为 Python 原生类型（list / set / int），
-不依赖 torch，规避 Windows 下 pyarrow DLL 冲突。
+不依赖 torch，保持模块轻量化。
 
 指标定义：
 - **Recall@k**   = |retrieved[:k] ∩ relevant| / |relevant|

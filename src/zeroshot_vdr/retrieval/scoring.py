@@ -158,7 +158,7 @@ def _align_similarity_dtypes(
     """为相似度计算对齐 dtype。
 
     页面向量常以 float16 落盘，查询向量则可能来自 bfloat16 推理。
-    在 Windows/CPU 侧做 MaxSim 时，两者必须先提升到同一 dtype。
+    在 CPU 侧做 MaxSim 时，两者必须先提升到同一 dtype。
     """
     common_dtype = torch.promote_types(query_emb.dtype, page_emb.dtype)
 

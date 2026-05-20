@@ -3,7 +3,7 @@
 > **项目名称**：ZeroShotVDR  
 > **方法基础**：ColPali（Late Interaction + VLM）  
 > **数据集**：MMLongBench  
-> **硬件环境**：当前主评测平台为 Ubuntu + 2x NVIDIA RTX 3090（24 GB 显存）+ Conda + uv；早期开发环境为 Windows 10 原生 + RTX 4060 Laptop（8 GB 显存）  
+> **硬件环境**：Ubuntu + 2x NVIDIA RTX 3090（24 GB 显存）+ Conda + uv  
 > **时间跨度**：2025.5.8 – 2025.6.9
 
 > **v9 同步说明（2026-05-20）**：本计划已按当前 Phase 4 完成状态同步。`src/zeroshot_vdr/advanced/` 已落地 `two_stage.py`、`neighbors.py`、`profiling.py` 与 `mean_pool_cache.py`；脚本目录已重组为 `scripts/run/` 与 `scripts/command/`，根目录新增 `main.py` 作为统一入口。Phase 4 valid-only 全量实验矩阵与 cache 版本均已跑通，当前推荐方法为 `adaptive_neighbors + mean-pool cache`，在 14,385 条有效标注查询上达到 Recall@10 = 0.8523、nDCG@10 = 0.6325、平均延迟约 0.060 s/query；Phase 5 的最终论文、答辩 PPT 与整理提交仍待完成。
@@ -18,7 +18,7 @@
   │ ├── core_module_revision_v3.md
   │ ├── core_module_revision_v4.md
   │ └── core_module_revision_v5.md
-- [二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）](#二环境配置指导win10-原生--rtx-4060-laptop--conda--uv)
+- [二、环境配置指导（Linux + Conda + uv）](#二环境配置指导linux--conda--uv)
   - [2.1 概览：分层管理](#21-概览分层管理)
   - [2.2 NVIDIA 驱动与 CUDA](#22-nvidia-驱动与-cuda)
   - [2.3 Conda 安装与 Python 环境](#23-conda-安装与-python-环境)
@@ -40,8 +40,7 @@
   - [4.4 评测层（evaluation/）](#44-评测层evaluation)
   - [4.5 设计决策说明](#45-设计决策说明)
 - [五、关键风险与注意事项](#五关键风险与注意事项)
-  - [5.1 RTX 4060 Laptop 显存限制](#51-rtx-4060-laptop-显存限制)
-  - [5.2 Windows 原生环境兼容性](#52-windows-原生环境兼容性)
+  - [5.1 显存限制与批次大小选择](#51-显存限制与批次大小选择)
   - [5.3 HuggingFace 访问问题](#53-huggingface-访问问题)
   - [5.4 ColPali MaxSim 计算效率](#54-colpali-maxsim-计算效率)
 - [六、里程碑与交付检查清单](#六里程碑与交付检查清单)
@@ -120,8 +119,7 @@ ZeroShotVDR/
 │   │   ├── run_phase4_eval.py     # Phase 4 单次评测入口
 │   │   └── run_phase4_full.sh     # Phase 4 批量全量运行脚本
 │   ├── command/
-│   │   ├── env.ps1                # Windows / PowerShell 激活入口
-│   │   ├── env.sh                 # Linux / bash 激活入口
+│   │   ├── env.sh                 # bash 激活入口
 │   │   ├── check_env.py           # 基础环境验证
 │   │   ├── check_phase4_progress.sh
 │   │   └── run_step3_clean.py     # Step 3 清理脚本
@@ -243,9 +241,9 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 
 ---
 
-## 二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）
+## 二、环境配置指导（Linux + Conda + uv）
 
-> **2026-05-20 同步说明**：本节中的 Win10 + RTX 4060 Laptop 步骤保留为早期开发环境记录。当前主评测与 full run 实际在 Ubuntu + 2x RTX 3090 上完成，Linux 下统一先在项目根目录执行 `source ./scripts/command/env.sh`，随后优先通过 `python main.py ...` 调用 Step 3 / Phase 4 / command 子命令；若需直连脚本，则使用 `scripts/run/` 与 `scripts/command/` 下的新路径。
+> **2026-05-20 同步说明**：当前主评测与 full run 均在 Ubuntu + 2x RTX 3090 上完成。统一先在项目根目录执行 `source ./scripts/command/env.sh`，随后优先通过 `python main.py ...` 调用 Step 3 / Phase 4 / command 子命令；若需直连脚本，则使用 `scripts/run/` 与 `scripts/command/` 下的路径。
 
 ### 2.1 概览：分层管理
 
@@ -257,24 +255,22 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 | 项目元数据     | **pyproject.toml**  | uv 原生格式，声明依赖与构建配置 |
 
 > **为什么不用 Conda 装 Python 包？**  
-> Conda 的 CUDA toolkit 配套包在 Windows 上可能出现版本冲突或需本地编译。  
-> PyTorch 官方在 PyPI 上提供了 Windows + CUDA 12.4 的预编译 wheel，uv 直接下载，零编译。驱动 595.79 支持最高 CUDA 13.2，向下兼容。
+> PyTorch 官方在 PyPI 上提供了 CUDA 12.4 的预编译 wheel，uv 直接下载，无需本地编译。驱动 595.79 支持最高 CUDA 13.2，向下兼容。
 
 ---
 
 ### 2.2 NVIDIA 驱动与 CUDA
 
-**RTX 4060 Laptop 要求**：
+**环境要求**：
 
-1. **NVIDIA 驱动程序**：>= 546.x（Game Ready 或 Studio 均可）
-   - 下载：https://www.nvidia.com/download/
+1. **NVIDIA 驱动程序**：>= 546.x
    - 验证：`nvidia-smi` 应显示 CUDA Version: 12.x 或更高
 
 2. **无需单独安装 CUDA Toolkit**  
    PyTorch wheel 自带 CUDA runtime（12.4），无需系统级 CUDA Toolkit。当前驱动 595.79（支持最高 CUDA 13.2）完全兼容。
 
 3. **验证驱动与 CUDA 支持**：
-   ```powershell
+   ```bash
    nvidia-smi
    # 应看到 Driver Version >= 546, CUDA Version: 12.x 或 13.x
    ```
@@ -284,41 +280,45 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 ### 2.3 Conda 安装与 Python 环境
 
 1. **安装 Miniconda**（推荐，轻量）：
-   - 下载 Windows 64-bit：https://docs.conda.io/en/latest/miniconda.html
-   - 安装时勾选 "Add Miniconda3 to my PATH environment variable"
+   - 下载 Linux 64-bit：https://docs.conda.io/en/latest/miniconda.html
 
 2. **仅创建 Python 环境（不装任何 Python 包）**：
 
-   ```powershell
+   ```bash
    # 创建空白环境（仅 Python 3.10）
    conda create -n zeroshotvdr python=3.10 -y
 
-    # 先激活 Conda 基础环境
+   # 激活环境
    conda activate zeroshotvdr
    ```
 
 3. **创建并激活项目虚拟环境**：
 
-   ```powershell
-    # 在项目根目录执行，uv 会创建 .venv
+   ```bash
+   # 在项目根目录执行，uv 会创建 .venv
    uv sync
 
    # 日常进入项目时，先激活 conda，再激活项目 .venv
    conda activate zeroshotvdr
-   .\.venv\Scripts\Activate.ps1
+   source .venv/bin/activate
+   ```
+
+   或直接使用项目提供的统一入口：
+
+   ```bash
+   source scripts/command/env.sh
    ```
 
    **为什么这样就能最小步骤使用？**
    - `uv sync` 会安装第三方依赖，并将当前仓库以 editable install 的形式安装到 `.venv`。
    - editable install 的作用是让 `src/` 下的项目代码可直接被当前虚拟环境导入。
    - 本项目的兼容性补丁位于仓库根目录的 `sitecustomize.py`。当你在**项目根目录**启动 `.venv` 里的 `python` 时，Python 会通过标准启动流程自动导入它。
-   - 这就是为什么后续直接运行 `python` 即可加载 ColPali，而不需要手动再执行任何补丁代码。
-   - 约束条件也很明确：请在项目根目录中启动 `python`，并优先使用 `.venv\Scripts\python.exe` 或已激活的项目 `.venv`。
+   - 约束条件也很明确：请在项目根目录中启动 `python`，并优先使用 `.venv/bin/python` 或已激活的项目 `.venv`。
 
 4. **验证**：
-   ```powershell
+   ```bash
    python --version   # Python 3.10.x
-    where python       # 顶部应优先指向 ZeroShotVDR\.venv\Scripts\python.exe
+   which python       # 应指向 ZeroShotVDR/.venv/bin/python
    ```
 
 ---
@@ -327,14 +327,14 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 
 #### 安装 uv
 
-```powershell
+```bash
 # 在 conda 环境中
 pip install uv
 ```
 
 #### 安装依赖
 
-```powershell
+```bash
 # 在项目根目录执行（确保 conda activate zeroshotvdr 已生效）
 uv sync
 
@@ -361,9 +361,8 @@ uv sync
 **我们选择 `pypdfium2` 作为唯一的 PDF 渲染方案**，理由：
 
 - ✅ **纯 Python 包**：通过 uv/pip 直接安装，零系统级依赖
-- ✅ **跨平台一致**：Windows / Linux / macOS 行为完全一致
+- ✅ **跨平台一致**：Linux / macOS 行为完全一致
 - ✅ **高性能**：基于 PDFium（Chromium 的 PDF 引擎），渲染质量高
-- ❌ ~~pdf2image + poppler~~：Windows 需手动安装 poppler 二进制并配置 PATH，增加环境搭建复杂度
 
 **使用示例**：
 
@@ -389,17 +388,17 @@ pil_image = bitmap.to_pil()      # 转为 PIL Image（可直接送入 ColPali）
 
 #### 统一放到项目目录下
 
-以下 PowerShell 环境变量会把 Hugging Face 的模型与数据缓存都放到当前项目内：
+以下环境变量会把 Hugging Face 的模型与数据缓存都放到当前项目内：
 
-```powershell
-New-Item -ItemType Directory -Force -Path .cache\huggingface, data\MMLongBench\raw | Out-Null
+```bash
+mkdir -p .cache/huggingface data/MMLongBench/raw
 
-$env:HF_HOME = "$PWD\.cache\huggingface"
-$env:HF_HUB_CACHE = "$PWD\.cache\huggingface\hub"
-$env:HF_DATASETS_CACHE = "$PWD\.cache\huggingface\datasets"
+export HF_HOME="$PWD/.cache/huggingface"
+export HF_HUB_CACHE="$PWD/.cache/huggingface/hub"
+export HF_DATASETS_CACHE="$PWD/.cache/huggingface/datasets"
 
-# 网络不稳时再启用镜像；PowerShell 中不要用 set
-$env:HF_ENDPOINT = "https://hf-mirror.com"
+# 网络不稳时再启用镜像
+export HF_ENDPOINT="https://hf-mirror.com"
 ```
 
 #### ColPali-v1.3 模型权重
@@ -411,7 +410,7 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"
 
 建议先把这两个仓库都下载到项目内缓存，而不是一上来直接跑 GPU 加载：
 
-```powershell
+```bash
 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='vidore/colpaligemma-3b-pt-448-base', cache_dir='.cache/huggingface/hub', resume_download=True); snapshot_download(repo_id='vidore/colpali-v1.3', cache_dir='.cache/huggingface/hub', resume_download=True); print('ColPali base + adapter downloaded into project-local cache.')"
 ```
 
@@ -419,7 +418,7 @@ uv run python -c "from huggingface_hub import snapshot_download; snapshot_downlo
 
 若只想做最小化联通性验证，可先下载小文件而不是完整权重：
 
-```powershell
+```bash
 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='vidore/colpali-v1.3', allow_patterns=['adapter_config.json', 'README.md'], local_dir='models/colpali-v1.3-probe', cache_dir='.cache/huggingface/hub'); print('Probe files downloaded.')"
 ```
 
@@ -447,7 +446,7 @@ MMLongBench 官方 README 推荐的是下载各个 `tar.gz` 文件并在本地�
 1. 先做 smoke test，只下载元数据包与 DocumentQA 图像包。
 2. 管线跑通后，再补齐全量图像包。
 
-```powershell
+```bash
 # 第一步：只下载最小可验证集合（聚焦 Phase 2 主评测集 DocumentQA）
 uv run hf download ZhaoweiWang/MMLongBench 0_mmlb_data.tar.gz --local-dir data/MMLongBench/raw --repo-type dataset
 uv run hf download ZhaoweiWang/MMLongBench 5_docqa_image.tar.gz --local-dir data/MMLongBench/raw --repo-type dataset
@@ -459,21 +458,20 @@ tar -xzf data/MMLongBench/raw/5_docqa_image.tar.gz -C data/MMLongBench/raw
 
 全量下载时，再补齐其余任务包：
 
-```powershell
-foreach ($file in @(
-    '2_vh_image.tar.gz',
-    '2_mm-niah_image.tar.gz',
-    '3_icl_image.tar.gz',
-    '4_summ_image.tar.gz',
-    '5_docqa_image.tar.gz'
-)) {
-    uv run hf download ZhaoweiWang/MMLongBench $file --local-dir data/MMLongBench/raw --repo-type dataset
-}
+```bash
+for file in \
+    '2_vh_image.tar.gz' \
+    '2_mm-niah_image.tar.gz' \
+    '3_icl_image.tar.gz' \
+    '4_summ_image.tar.gz' \
+    '5_docqa_image.tar.gz'; do
+    uv run hf download ZhaoweiWang/MMLongBench "$file" --local-dir data/MMLongBench/raw --repo-type dataset
+done
 ```
 
 如果只是检查数据组织或字段，不要把整个流式数据集转成列表。可以只读取少量样本：
 
-```powershell
+```bash
 uv run python -c "from datasets import load_dataset; ds = load_dataset('ZhaoweiWang/MMLongBench', split='test', streaming=True); first = next(iter(ds)); print(first.keys())"
 ```
 
@@ -503,21 +501,13 @@ data/MMLongBench/
 
 对日常使用者而言，**推荐优先使用 `main.py`**；只有在调试脚本实现本身时，才直接调用 `scripts/run/` 或 `scripts/command/` 下的文件。
 
-#### `scripts/command/env.ps1` / `scripts/command/env.sh` —— 环境激活入口
-
-Linux：
+#### `scripts/command/env.sh` —— 环境激活入口
 
 ```bash
 source scripts/command/env.sh
 ```
 
-PowerShell：
-
-```powershell
-. .\scripts\command\env.ps1
-```
-
-当前脚本会定位项目根目录并激活项目 `.venv`；在 Linux 主平台下，这是所有 full run、smoke run 与环境检查前的统一入口。
+当前脚本会定位项目根目录并激活项目 `.venv`；这是所有 full run、smoke run 与环境检查前的统一入口。
 
 #### `main.py` —— 统一命令入口
 
@@ -612,7 +602,7 @@ python main.py command trace-analyze --trace outputs/eval_reports/phase4_adaptiv
 
 - [ ] 安装 Miniconda，创建 `zeroshotvdr` 环境（Python 3.10）
 - [ ] 安装 uv，完成 `uv sync`（依赖安装并创建 `.venv`）
-- [ ] 进入项目时按顺序执行 `conda activate zeroshotvdr` 和 `.\.venv\Scripts\Activate.ps1`
+- [ ] 进入项目时执行 `source scripts/command/env.sh`（或手动 `conda activate zeroshotvdr && source .venv/bin/activate`）
 - [ ] 将 ColPali base + adapter 下载到项目内 `.cache/huggingface/`
 - [ ] **明确下载 DocumentQA 所需资源**：`0_mmlb_data.tar.gz`（元数据）+ `5_docqa_image.tar.gz`（DocumentQA 页面图像），解压到 `data/MMLongBench/raw/`
 - [ ] 验证项目内模型缓存与数据目录可读取
@@ -644,7 +634,7 @@ python main.py command trace-analyze --trace outputs/eval_reports/phase4_adaptiv
 >
 > 1. 所有同时使用 `datasets` 与 `torch` 的模块，必须在文件顶部
 >    `import datasets`（或 `import pandas`）**先于** `import torch`，否则会触发
->    pyarrow C++ DLL 冲突导致进程崩溃。详见 5.2.1 节。
+>    pyarrow 与 torch 的 C++ 原生库加载顺序冲突导致进程崩溃。详见 5.2.1 节。
 > 2. 建议将数据读取层与模型层分属不同模块文件，从物理上规避导入顺序问题：
 >    `data/` 层依赖 `datasets`，`indexing/` 和 `retrieval/` 层依赖 `torch`，
 >    跨层调用通过函数传参而非顶层 import 混合。
@@ -1889,9 +1879,9 @@ encode_query → generate_candidates → score_candidates → assemble_results
 - **两阶段检索（Phase 4B）**：只需替换 `generate_candidates` 为均值池化粗筛，其余环节复用。
 - **索引压缩（Phase 4A）**：只需在 `score_candidates` 中处理变长 patch 的张量。
 
-#### 4.5.4 模块边界与 Windows 导入约束
+#### 4.5.4 模块边界与导入顺序约束
 
-为确保 Windows 下 `datasets`（→ pyarrow）与 `torch` 不产生 DLL 冲突，模块在设计上遵循以下边界：
+为避免 `datasets`（→ pyarrow）与 `torch` 的 C++ 原生库加载冲突，模块在设计上遵循以下边界：
 
 | 层            | 主要依赖                       | 避免顶层导入                                              |
 | ------------- | ------------------------------ | --------------------------------------------------------- |
@@ -1900,7 +1890,7 @@ encode_query → generate_candidates → score_candidates → assemble_results
 | `retrieval/`  | `torch`, `transformers`        | `datasets`                                                |
 | `evaluation/` | `pandas`（→ pyarrow）, `numpy` | `torch`（指标函数接受 Python list/set，避免 tensor 操作） |
 
-若某模块必须同时使用二者，应在模块顶部**先 `import datasets` / `import pandas`，再 `import torch`**，详见 5.2.1 节。
+若某模块必须同时使用二者，应在模块顶部**先 `import datasets` / `import pandas`，再 `import torch`**。
 
 #### 4.5.5 评测协议：检索范围与结果汇报（v2 新增）
 
@@ -1946,8 +1936,7 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 | 考量             | 说明                                                                             | 缓解措施                                                     |
 | ---------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | 小文件 I/O 开销  | DocumentQA K4/K8 档位页面数较少（~数十页），影响可忽略；K128 可能达数千页        | 批量读取时使用 `torch.load` 的并行加载；必要时可缓存合并视图 |
-| Windows 文件系统 | NTFS 对数千个小文件的目录枚举有性能成本，但远未到需要特殊处理的量级（<10K 文件） | `page_ids.json` 维护有序列表，避免频繁 `os.listdir`          |
-| 跨平台迁移       | 逐页文件便于 rsync/robocopy 增量同步，反而优于巨型单文件                         | 无额外风险                                                   |
+| 跨平台迁移       | 逐页文件便于 rsync 增量同步，反而优于巨型单文件                         | 无额外风险                                                   |
 | 未来更大规模     | 若页面数超 50K（超出当前 MMLongBench 总规模），可转为分片存储（shard）           | 当前阶段不需要                                               |
 
 **结论**：逐页独立存储是当前阶段（Phase 2-4）的优先策略。若后续实验显示 I/O 成为瓶颈（预期不会，因为 GPU 推理远慢于磁盘读取），可引入可选的 shard 合并模式，不影响现有接口。
@@ -1994,9 +1983,9 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 
 ## 五、关键风险与注意事项
 
-### 5.1 RTX 4060 Laptop 显存限制
+### 5.1 显存限制与批次大小选择
 
-> **Warning: 8 GB 显存是最大约束。**
+> **8 GB 显存环境下需注意批次大小控制。**
 
 **缓解措施**：
 
@@ -2013,22 +2002,22 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 - 单张图像编码：~1 GB（672x672 输入，含中间激活）
 - MaxSim 计算：可控（逐批释放）
 
-### 5.2 Windows 原生环境兼容性
+### 5.2 依赖库兼容性
 
-| 组件           | Windows 兼容性 | 说明                                    |
-| -------------- | -------------- | --------------------------------------- |
-| PyTorch        | OK             | 官方预编译 wheel                        |
-| transformers   | OK             | 纯 Python                               |
-| colpali-engine | OK             | 纯 Python，依赖 transformers            |
-| pypdfium2      | OK             | 纯 Python，零系统依赖，Windows 首选方案 |
-| uv             | OK             | Windows 原生支持                        |
-| datasets       | 需注意         | 见下方 pyarrow DLL 冲突                 |
+| 组件           | 兼容性 | 说明                                    |
+| -------------- | ------ | --------------------------------------- |
+| PyTorch        | OK     | 官方预编译 wheel                        |
+| transformers   | OK     | 纯 Python                               |
+| colpali-engine | OK     | 纯 Python，依赖 transformers            |
+| pypdfium2      | OK     | 纯 Python，零系统依赖                   |
+| uv             | OK     | 跨平台支持                              |
+| datasets       | 需注意 | 见下方 pyarrow 加载顺序约束             |
 
-#### 5.2.1 pyarrow 与 torch 的 C++ DLL 冲突（重要）
+#### 5.2.1 pyarrow 与 torch 的 C++ 原生库加载顺序约束
 
-**现象**：在已导入 `torch` 的进程中 `import datasets`，Python 进程直接崩溃（Windows access violation），无 Python traceback。
+**现象**：在已导入 `torch` 的进程中 `import datasets`，Python 进程可能崩溃，无 Python traceback。
 
-**根因**：`datasets` → `pandas` → `pyarrow` 的 C++ 原生扩展与 `torch` 的 CUDA 运行时库存在 DLL 符号冲突。`pyarrow` 24.0.0 与 `torch` 2.6.0 搭配时，若 torch 先初始化，pyarrow 在加载其 C 扩展（`pyarrow/__init__.py` → `pyarrow/dataset.py`）时触发内存访问违例。
+**根因**：`datasets` → `pandas` → `pyarrow` 的 C++ 原生扩展与 `torch` 的 CUDA 运行时库存在符号冲突。若 torch 先初始化，pyarrow 在加载其 C 扩展时可能触发内存访问违例。
 
 **解决方案**：
 
@@ -2037,9 +2026,9 @@ DocumentQA 的数据形式是"单个查询对应单个长文档内的页面集�
 import datasets   # 或 from datasets import ...
 import torch
 
-# 错误顺序：先导入 torch 再导入 datasets 会导致崩溃
+# 错误顺序：先导入 torch 再导入 datasets 可能导致崩溃
 import torch
-import datasets   # ← access violation!
+import datasets   # ← 可能崩溃!
 ```
 
 **模块边界隔离策略**（根本性规避）：
@@ -2057,12 +2046,12 @@ import datasets   # ← access violation!
 
 若无法直接访问 huggingface.co：
 
-```powershell
-# PowerShell 中设置镜像环境变量（在当前终端生效）
-$env:HF_ENDPOINT = "https://hf-mirror.com"
-$env:HF_HOME = "$PWD\.cache\huggingface"
-$env:HF_HUB_CACHE = "$PWD\.cache\huggingface\hub"
-$env:HF_DATASETS_CACHE = "$PWD\.cache\huggingface\datasets"
+```bash
+# 在当前终端设置镜像环境变量
+export HF_ENDPOINT="https://hf-mirror.com"
+export HF_HOME="$PWD/.cache/huggingface"
+export HF_HUB_CACHE="$PWD/.cache/huggingface/hub"
+export HF_DATASETS_CACHE="$PWD/.cache/huggingface/datasets"
 
 # 或在代码中设置
 import os

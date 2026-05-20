@@ -29,8 +29,8 @@ def _is_cuda_oom(exc: Exception) -> bool:
 def _verify_peft_patch() -> None:
     """验证 sitecustomize PEFT MoE 兼容补丁是否已生效。
 
-    若补丁未生效，在 Windows 上加载 ColPali 时会触发
-    ``KeyError: 'llava'``，进程直接崩溃。
+    若补丁未生效，加载 ColPali 时会触发 ``KeyError: 'llava'``，
+    进程直接崩溃。
 
     Raises
     ------
@@ -53,8 +53,7 @@ def _verify_peft_patch() -> None:
     raise RuntimeError(
         "sitecustomize PEFT MoE 补丁未生效！\n"
         "请确保从项目根目录使用 .venv 中的 Python 启动：\n"
-        "  conda activate zeroshotvdr\n"
-        "  .\\.venv\\Scripts\\Activate.ps1\n"
+        "  source scripts/command/env.sh\n"
         "  python your_script.py\n"
         "或在脚本顶部显式添加：\n"
         "  import sitecustomize  # 必须在 import torch 之前\n"
@@ -121,8 +120,8 @@ class PageEncoder:
 
         .. important::
            调用前需确保 ``sitecustomize.py`` 补丁已生效：
-           - 从项目根目录使用 ``.venv\\Scripts\\python.exe`` 启动 Python
-           - 或先 ``conda activate zeroshotvdr && .\\.venv\\Scripts\\Activate.ps1``
+           - 从项目根目录使用 ``.venv/bin/python`` 启动 Python
+           - 或先 ``source scripts/command/env.sh``
            - 或在脚本顶部显式 ``import sitecustomize``
 
         Parameters
