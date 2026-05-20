@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 from pathlib import Path
@@ -197,6 +198,7 @@ def build_mean_pool_cache(
     page_ids: list[str],
     cache: MeanPoolCache,
     meta: dict | None = None,
+    batch_size: int = 1024,
 ) -> None:
     """从 IndexStore 构建 MeanPoolCache。
 
@@ -209,8 +211,50 @@ def build_mean_pool_cache(
         目标缓存对象
     meta : dict | None
         额外元信息
+    batch_size : int
+        每批处理的页面数，避免全量构建时占用过高内存
     """
-    logger.info("开始构建 MeanPoolCache: %d 页...", len(page_ids))
-    embeddings, pids = index_store.get_mean_pooled_view(page_ids)
-    cache.save(pids, embeddings, meta=meta)
+    if batch_size <= 0:
+        raise ValueError("batch_size 必须为正整数")
+
+    logger.info(
+        "开始构建 MeanPoolCache: %d 页 (batch_size=%d)...",
+        len(page_ids),
+        batch_size,
+    )
+
+    mean_chunks: list[torch.Tensor] = []
+    cached_page_ids: list[str] = []
+    total_batches = (len(page_ids) + batch_size - 1) // batch_size if page_ids else 0
+
+    for batch_index, start in enumerate(range(0, len(page_ids), batch_size), start=1):
+        batch_page_ids = page_ids[start:start + batch_size]
+        batch_embeddings, batch_pids = index_store.get_mean_pooled_view(batch_page_ids)
+        if batch_embeddings.numel() == 0:
+            continue
+
+        mean_chunks.append(batch_embeddings.cpu())
+        cached_page_ids.extend(batch_pids)
+
+        if batch_index == 1 or batch_index == total_batches or batch_index % 10 == 0:
+            logger.info(
+                "MeanPoolCache 构建进度: batch %d/%d (%d 页)",
+                batch_index,
+                total_batches,
+                len(cached_page_ids),
+            )
+
+        del batch_embeddings
+        gc.collect()
+
+    if mean_chunks:
+        embeddings = torch.cat(mean_chunks, dim=0)
+    else:
+        embeddings = torch.empty((0, 0))
+
+    if meta is not None:
+        meta = dict(meta)
+        meta.setdefault("build_batch_size", batch_size)
+
+    cache.save(cached_page_ids, embeddings, meta=meta)
     logger.info("MeanPoolCache 构建完成")

@@ -3,9 +3,9 @@
 # Phase 4 全量评测（后台运行）
 #
 # 用法:
-#   bash scripts/run_phase4_full.sh              # 启动后台评测
-#   bash scripts/run_phase4_full.sh --resume     # 续跑中断的任务
-#   bash scripts/check_phase4_progress.sh        # 查看进度
+#   bash scripts/run/run_phase4_full.sh              # 启动后台评测
+#   bash scripts/run/run_phase4_full.sh --resume     # 续跑中断的任务
+#   bash scripts/command/check_phase4_progress.sh    # 查看进度
 #
 # 输出:
 #   outputs/eval_reports/phase4_fixed_topn/
@@ -18,7 +18,7 @@ set -euo pipefail
 FAIL_ON_NO_MATCH=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # ---- 配置 ----
@@ -75,7 +75,7 @@ CURRENT=0
 for TASK in "${TASK_ORDER[@]}"; do
     CURRENT=$((CURRENT + 1))
     TASK_LOG="$LOG_DIR/phase4_${TASK}.log"
-    CMD="$VENV_PYTHON scripts/run_phase4_eval.py ${TASKS[$TASK]} --index-dir $INDEX_DIR $RESUME_FLAG"
+    CMD="$VENV_PYTHON scripts/run/run_phase4_eval.py ${TASKS[$TASK]} --index-dir $INDEX_DIR $RESUME_FLAG"
 
     echo "" | tee -a "$MAIN_LOG"
     echo "---- [$CURRENT/$TOTAL] $TASK ----" | tee -a "$MAIN_LOG"

@@ -20,7 +20,16 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _detect_project_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise RuntimeError(f"未找到项目根目录: {current}")
+
+
+PROJECT_ROOT = _detect_project_root()
 os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / ".cache" / "huggingface"))
 os.environ.setdefault("HF_HUB_CACHE", str(PROJECT_ROOT / ".cache" / "huggingface" / "hub"))
 os.environ.setdefault(

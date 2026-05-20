@@ -1,4 +1,4 @@
-"""环境验证脚本。运行：python scripts/check_env.py
+"""环境验证脚本。运行：python scripts/command/check_env.py
 
 .. note::
    导入顺序很重要：pyarrow（datasets/pandas 的依赖）与 torch 在 Windows 上存在
@@ -10,7 +10,16 @@ import sys
 from pathlib import Path
 from importlib import import_module
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _detect_project_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise RuntimeError(f"未找到项目根目录: {current}")
+
+
+PROJECT_ROOT = _detect_project_root()
 HF_HOME = PROJECT_ROOT / ".cache" / "huggingface"
 os.environ.setdefault("HF_HOME", str(HF_HOME))
 os.environ.setdefault("HF_HUB_CACHE", str(HF_HOME / "hub"))

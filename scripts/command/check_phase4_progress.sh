@@ -3,15 +3,15 @@
 # Phase 4 进度查看工具
 #
 # 用法:
-#   bash scripts/check_phase4_progress.sh           # 查看所有任务进度
-#   bash scripts/check_phase4_progress.sh --watch   # 每 30 秒刷新
-#   bash scripts/check_phase4_progress.sh --tail    # 查看当前任务实时日志
+#   bash scripts/command/check_phase4_progress.sh           # 查看所有任务进度
+#   bash scripts/command/check_phase4_progress.sh --watch   # 每 30 秒刷新
+#   bash scripts/command/check_phase4_progress.sh --tail    # 查看当前任务实时日志
 # ===========================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"

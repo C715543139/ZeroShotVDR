@@ -130,11 +130,21 @@ class TestMeanPoolCache:
 class FakeIndexStore:
     """fake IndexStore 用于测试 build_mean_pool_cache。"""
 
-    def __init__(self, page_ids: list[str], dim: int = 128):
+    def __init__(
+        self,
+        page_ids: list[str],
+        dim: int = 128,
+        max_batch_size: int | None = None,
+    ):
         self._page_ids = page_ids
         self._dim = dim
+        self._max_batch_size = max_batch_size
+        self._requested_batch_sizes: list[int] = []
 
     def get_mean_pooled_view(self, page_ids):
+        self._requested_batch_sizes.append(len(page_ids))
+        if self._max_batch_size is not None and len(page_ids) > self._max_batch_size:
+            raise AssertionError(f"batch 过大: {len(page_ids)} > {self._max_batch_size}")
         gen = torch.Generator()
         gen.manual_seed(42)
         embs = torch.randn(len(page_ids), self._dim, generator=gen)
@@ -151,3 +161,15 @@ class TestBuildMeanPoolCache:
         cache.load()
         assert len(cache.page_ids) == 50
         assert cache.embeddings.shape == (50, 128)
+
+    def test_build_batches_large_requests(self, tmp_cache_dir):
+        store = FakeIndexStore(
+            [f"doc/p{i}" for i in range(50)],
+            max_batch_size=16,
+        )
+        cache = MeanPoolCache(tmp_cache_dir)
+
+        build_mean_pool_cache(store, store._page_ids, cache, batch_size=16)
+
+        assert cache.exists()
+        assert store._requested_batch_sizes == [16, 16, 16, 2]
