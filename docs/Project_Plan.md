@@ -6,7 +6,7 @@
 > **硬件环境**：当前主评测平台为 Ubuntu + 2x NVIDIA RTX 3090（24 GB 显存）+ Conda + uv；早期开发环境为 Windows 10 原生 + RTX 4060 Laptop（8 GB 显存）  
 > **时间跨度**：2025.5.8 – 2025.6.9
 
-> **v8 同步说明（2026-05-16）**：本计划已按当前仓库实现状态同步。Phase 3 已完成稳定页面身份语义下的全量评测、分析与方向决策；当前主评测协议为“Query 显式携带 sample-specific `candidate_page_ids`，检索阶段优先使用该候选集”；Phase 4 尚未开始，`src/zeroshot_vdr/advanced/` 目录仍未落地，但 `RetrievalPipeline`、`IndexStore` 与 `scoring.py` 已保留扩展点。
+> **v9 同步说明（2026-05-20）**：本计划已按当前 Phase 4 完成状态同步。`src/zeroshot_vdr/advanced/` 已落地 `two_stage.py`、`neighbors.py`、`profiling.py` 与 `mean_pool_cache.py`；脚本目录已重组为 `scripts/run/` 与 `scripts/command/`，根目录新增 `main.py` 作为统一入口。Phase 4 valid-only 全量实验矩阵与 cache 版本均已跑通，当前推荐方法为 `adaptive_neighbors + mean-pool cache`，在 14,385 条有效标注查询上达到 Recall@10 = 0.8523、nDCG@10 = 0.6325、平均延迟约 0.060 s/query；Phase 5 的最终论文、答辩 PPT 与整理提交仍待完成。
 
 ---
 
@@ -100,8 +100,12 @@ ZeroShotVDR/
 │   │   ├── __init__.py
 │   │   ├── metrics.py             # 指标实现（与数据集解耦）
 │   │   └── ground_truth.py        # Ground truth 加载与适配
-│   └── advanced/                  # Phase 4 预留目录（当前仓库尚未创建）
-│       └── ...
+│   └── advanced/                  # Phase 4 两阶段检索与分析模块
+│       ├── __init__.py
+│       ├── two_stage.py           # TwoStageRetriever 与自适应候选逻辑
+│       ├── neighbors.py           # page_id 解析与邻页扩展
+│       ├── mean_pool_cache.py     # MeanPoolCache 与批量构建逻辑
+│       └── profiling.py           # Trace / profiling 数据结构
 │
 ├── config/
 │   └── default.yaml               # 全局配置文件（数据/模型/索引/检索/评测参数）
@@ -109,20 +113,32 @@ ZeroShotVDR/
 ├── .cache/
 │   └── huggingface/               # 项目内 Hugging Face 缓存（模型/数据都放这里）
 │
-├── scripts/                       # 运行与验证脚本
-│   ├── env.ps1                    # Windows / PowerShell 激活入口
-│   ├── env.sh                     # Linux / bash 激活入口
-│   ├── check_env.py               # 基础环境验证
-│   ├── test_model_load.py         # ColPali 模型加载验证
-│   ├── run_step3_eval.py          # Step 3.1 评测脚本（支持 stats-only / smoke / full run）
-│   ├── run_step3_analysis.py      # Step 3.2 分析脚本（曲线、bad case、代表性样本）
-│   └── run_step3_clean.py         # Step 3 清理脚本（支持 dry-run / 范围清理 / 全量清理）
+├── scripts/                       # 运行、分析与辅助命令
+│   ├── run/
+│   │   ├── run_step3_eval.py      # Step 3.1 评测脚本
+│   │   ├── run_step3_analysis.py  # Step 3.2 分析脚本
+│   │   ├── run_phase4_eval.py     # Phase 4 单次评测入口
+│   │   └── run_phase4_full.sh     # Phase 4 批量全量运行脚本
+│   ├── command/
+│   │   ├── env.ps1                # Windows / PowerShell 激活入口
+│   │   ├── env.sh                 # Linux / bash 激活入口
+│   │   ├── check_env.py           # 基础环境验证
+│   │   ├── check_phase4_progress.sh
+│   │   └── run_step3_clean.py     # Step 3 清理脚本
+│   ├── analyze_phase4_trace.py    # Phase 4 trace / slice 分析
+│   ├── backfill_step3_phase4_schema.py
+│   └── test_model_load.py         # ColPali 模型加载验证
 │
 ├── outputs/                       # 检索结果 & 评测报告（不纳入版本控制）
 │   ├── retrieval_results/
 │   │   └── results_top{k}.json    # 各 k 值的检索结果
 │   └── eval_reports/
 │       └── {run_name}/
+│           ├── summary.json
+│           ├── slice_metrics.csv
+│           ├── bucket_metrics.csv
+│           ├── phase4_trace.jsonl
+│           ├── trace_summary.json
 │           ├── metrics_summary.csv
 │           ├── metrics_overall.csv
 │           ├── metrics_by_subtask.csv
@@ -135,6 +151,7 @@ ZeroShotVDR/
 │   ├── Proposal_VDR.md            # 开题报告
 │   ├── Project_Plan.md            # 本文件：项目计划
 │   ├── Milestone_Report_Phase3.md # 阶段三里程碑报告
+│   ├── Milestone_Report_Phase4.md # 阶段四里程碑报告
 │   └── revision/                  # 修订记录
 │       ├── core_module_revision_v1.md
 │       ├── core_module_revision_v2.md
@@ -144,9 +161,12 @@ ZeroShotVDR/
 │       ├── core_module_revision_v6.md
 │       ├── core_module_revision_v7.md
 │       ├── project_plan_revision_v1.md
+│       ├── project_plan_revision_v2.md
+│       ├── milestone_report_phase4_revision_v1.md
 │       ├── step3_eval_revision_v1.md
 │       └── step3_direction_revision_v1.md
 │
+├── main.py                        # 统一命令入口（step3 / phase4 / command）
 ├── pyproject.toml                 # uv 原生项目配置
 ├── uv.lock                        # 依赖锁定文件
 ├── .python-version                # uv 读取，固定 Python 3.10
@@ -225,7 +245,7 @@ MMLongBench 数据集及本项目的概念分为以下五个层级，由粗到�
 
 ## 二、环境配置指导（Win10 原生 + RTX 4060 Laptop + Conda + uv）
 
-> **2026-05-16 同步说明**：本节中的 Win10 + RTX 4060 Laptop 步骤保留为早期开发环境记录。当前主评测与 full run 实际在 Ubuntu + 2x RTX 3090 上完成，Linux 下统一先在项目根目录执行 `source ./scripts/env.sh`，再运行 `python scripts/run_step3_eval.py` / `python scripts/run_step3_analysis.py`。
+> **2026-05-20 同步说明**：本节中的 Win10 + RTX 4060 Laptop 步骤保留为早期开发环境记录。当前主评测与 full run 实际在 Ubuntu + 2x RTX 3090 上完成，Linux 下统一先在项目根目录执行 `source ./scripts/command/env.sh`，随后优先通过 `python main.py ...` 调用 Step 3 / Phase 4 / command 子命令；若需直连脚本，则使用 `scripts/run/` 与 `scripts/command/` 下的新路径。
 
 ### 2.1 概览：分层管理
 
@@ -475,116 +495,101 @@ data/MMLongBench/
 
 ### 2.7 环境验证与运行脚本
 
-项目当前提供 5 个常用脚本，均位于 `scripts/` 目录下。脚本的**唯一权威版本**以实际文件为准，下方仅作功能说明。
+项目当前脚本已按职责重组：
 
-#### `scripts/env.ps1` —— 评测前环境激活入口
+- `scripts/run/`：实验运行脚本
+- `scripts/command/`：环境、检查、清理与进度命令
+- `main.py`：统一入口，优先调度项目 `.venv` Python
 
-所有评测命令执行前，先从项目根目录运行：
+对日常使用者而言，**推荐优先使用 `main.py`**；只有在调试脚本实现本身时，才直接调用 `scripts/run/` 或 `scripts/command/` 下的文件。
 
-```powershell
-. .\scripts\env.ps1
+#### `scripts/command/env.ps1` / `scripts/command/env.sh` —— 环境激活入口
+
+Linux：
+
+```bash
+source scripts/command/env.sh
 ```
 
-当前脚本会优先尝试激活 `zeroshotvdr` conda 环境；若当前 PowerShell 未初始化 conda shell hook，则会给出 warning 并继续激活项目 `.venv`。这能保证：
-
-- 优先使用项目本地解释器 `.venv\Scripts\python.exe`
-- `sitecustomize.py` 能在项目根目录下自动生效
-- 后续 `check_env.py` / `test_model_load.py` / `run_step3_eval.py` 的运行方式保持一致
-
-#### `scripts/check_env.py` —— 基础环境验证
-
-一键检测以下项是否就绪：
-
-| 检查项            | 内容                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------- |
-| Python 版本       | 必须为 3.10.x                                                                               |
-| 轻量依赖导入      | numpy, yaml, tqdm, rich, PIL, pypdfium2, datasets（先于 torch 加载，避免 pyarrow DLL 冲突） |
-| CUDA & 深度学习栈 | CUDA 可用性、GPU 信息、显存容量；transformers, colpali_engine, einops 导入                  |
-| HF 缓存路径       | 输出项目内 `HF_HOME` / `HF_HUB_CACHE` / `HF_DATASETS_CACHE` 配置                            |
-
-运行方式：从项目根目录执行 `python scripts/check_env.py`，预期全部项打印 `[PASS]`。
-
-> ⚠️ 脚本以 `HF_HUB_OFFLINE=1` 运行，仅验证包导入，不连接 HuggingFace Hub，避免网络超时。
-
-#### `scripts/test_model_load.py` —— 模型加载与推理验证
-
-在基础环境验证通过后，进一步验证 ColPali-v1.3 模型能否在 GPU 上正常加载并完成前向推理：
-
-| 验证项             | 内容                                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| sitecustomize 补丁 | 确认 PEFT MoE 兼容性补丁已生效（解决 transformers v5 + PaliGemma 的 `KeyError: 'llava'` 问题） |
-| 模型加载           | `ColPali.from_pretrained("vidore/colpali-v1.3", device_map="cuda:0")`                          |
-| 图像编码           | 输入 PIL Image → 输出 patch embeddings `[n_patches, dim]`                                      |
-| 文本/查询编码      | 输入查询文本 → 输出 token embeddings `[n_tokens, dim]`                                         |
-| 显存报告           | 输出当前 CUDA 显存分配/缓存情况                                                                |
-
-运行方式：从项目根目录执行 `python scripts/test_model_load.py`，预期输出"模型验证全部通过"。
-
-#### `scripts/run_step3_eval.py` —— Step 3.1 页级检索评测
-
-该脚本用于运行 DocumentQA 的文档内页级检索评测，支持三种模式：
-
-| 模式       | 用途                       | 典型参数                                       |
-| ---------- | -------------------------- | ---------------------------------------------- |
-| 统计模式   | 仅收集数据规模，不加载模型 | `--stats-only`                                 |
-| smoke test | 小样本局部评测             | `--subtasks ... --lengths ... --max-queries N` |
-| full run   | 全量评测并自动补建缺失索引 | 无 `--max-queries`，默认评测主集               |
-
-脚本行为约束：
-
-- 强制设置项目内 Hugging Face 缓存目录（`HF_HOME` / `HF_HUB_CACHE` / `HF_DATASETS_CACHE`）
-- 强制离线模式（`HF_HUB_OFFLINE=1`、`HF_DATASETS_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`）
-- 若索引中缺少当前评测范围的页面，则自动增量补建该范围所需页面
-- 输出按 run_name 分目录落盘到 `outputs/eval_reports/{run_name}/`
-
-运行示例：
+PowerShell：
 
 ```powershell
-# 仅统计全量规模
-. .\scripts\env.ps1
-python scripts/run_step3_eval.py --stats-only --run-name full_scope_stats
-
-# 本机 smoke test
-. .\scripts\env.ps1
-python scripts/run_step3_eval.py --subtasks longdocurl --lengths K4 --max-queries 5 --page-batch-size 1 --score-batch-size 8 --run-name smoke_eval_longdocurl_K4_q5
-
-# 强设备全量评测
-. .\scripts\env.ps1
-python scripts/run_step3_eval.py --run-name step3_docqa_full
+. .\scripts\command\env.ps1
 ```
 
-#### `scripts/run_step3_clean.py` —— Step 3 清理脚本
+当前脚本会定位项目根目录并激活项目 `.venv`；在 Linux 主平台下，这是所有 full run、smoke run 与环境检查前的统一入口。
 
-该脚本用于清理 Step 3 产出的评测结果目录，以及按子任务/长度范围匹配的索引页面文件。默认仅做预览，不会真正删除；需要显式传入 `--yes` 才执行删除。
+#### `main.py` —— 统一命令入口
 
-脚本支持 3 种清理方式：
+用法：
 
-| 方式          | 作用                                                                           | 典型参数                                  |
-| ------------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
-| 精确 run 清理 | 清理指定 `run_name` 的输出目录，并可从其 `run_summary.json` 反推出对应索引范围 | `--run-names smoke_eval_longdocurl_K4_q5` |
-| 范围清理      | 按 `subtasks × lengths` 清理输出目录与索引页                                   | `--subtasks slidevqa --lengths K32`       |
-| 全量清理      | 清理全部 Step 3 输出目录，并删除索引中的全部 docqa 页面                        | `--all`                                   |
+```bash
+python main.py <group> <command> [args...]
+```
 
-脚本行为约束：
+当前支持的三组命令为：
 
-- 默认仅打印清理计划；未传 `--yes` 时不会实际删除
-- 若未显式指定 `--clean-outputs` / `--clean-index`，默认同时预览两者
-- 对索引的范围清理会同步重写 `page_ids.json`，并更新 `index_meta.json` 中的 `num_pages`
+| 分组      | 常用命令                    | 作用 |
+| --------- | --------------------------- | ---- |
+| `step3`   | `eval`, `analysis`          | Step 3 评测与分析 |
+| `phase4`  | `eval`, `full`             | Phase 4 单次评测与批量运行 |
+| `command` | `check-env`, `step3-clean`, `phase4-progress`, `trace-analyze`, `backfill-step3-phase4-schema`, `test-model-load` | 辅助命令 |
 
-运行示例：
+示例：
 
-```powershell
-# 预览：按 run_name 清理 smoke test 的输出和索引页
-. .\scripts\env.ps1
-python scripts/run_step3_clean.py --run-names smoke_eval_longdocurl_K4_q5 --clean-outputs --clean-index --dry-run
+```bash
+python main.py command check-env
+python main.py step3 eval --run-name step3_docqa_full_dual3090_stable_page_ids --index-dir data/processed/index_stable_page_ids
+python main.py phase4 eval --run-name smoke_fixed64 --method fixed_topn --coarse-top-n 64 --max-queries 50 --valid-only
+python main.py command phase4-progress --watch
+```
 
-# 实际清理：删除 slidevqa/K32 对应的 Step 3 输出和索引页
-. .\scripts\env.ps1
-python scripts/run_step3_clean.py --subtasks slidevqa --lengths K32 --clean-outputs --clean-index --yes
+若需要把 `--help` 原样转发给子脚本，可使用：
 
-# 实际清理全部 Step 3 产物
-. .\scripts\env.ps1
-python scripts/run_step3_clean.py --all --yes
+```bash
+python main.py phase4 eval -- --help
+```
+
+#### 环境与模型验证脚本
+
+| 脚本 | 作用 | 推荐调用方式 |
+| ---- | ---- | ------------ |
+| `scripts/command/check_env.py` | 检查 Python 版本、关键依赖、CUDA、HF 缓存路径 | `python main.py command check-env` |
+| `scripts/test_model_load.py` | 验证 ColPali-v1.3 可在 GPU 上完成图像与文本前向 | `python main.py command test-model-load` |
+
+其中 `check_env.py` 以 offline 模式运行，不连接 HuggingFace Hub，仅验证本地环境是否就绪。
+
+#### `scripts/run/` —— 核心评测脚本
+
+| 脚本 | 作用 | 当前说明 |
+| ---- | ---- | -------- |
+| `scripts/run/run_step3_eval.py` | Step 3.1 页级检索评测 | 支持 `--stats-only`、smoke、full run、断点恢复与稳定 index 路径 |
+| `scripts/run/run_step3_analysis.py` | Step 3.2 结果分析 | 输出趋势、bad case 与方向决策辅助产物 |
+| `scripts/run/run_phase4_eval.py` | Phase 4 单次评测入口 | 支持 `fixed_topn`、`adaptive`、`adaptive_neighbors`、valid-only、trace、cache |
+| `scripts/run/run_phase4_full.sh` | Phase 4 批量全量运行脚本 | 顺序执行主消融全量任务 |
+
+推荐示例：
+
+```bash
+source scripts/command/env.sh
+python main.py step3 analysis --run-dir outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids
+python main.py phase4 eval --run-name phase4_adaptive_neighbors_cache_full_20260520 --method adaptive_neighbors --neighbor-window 1 --neighbor-seed-n 8 --valid-only --trace-enabled --use-mean-pool-cache true --mean-pool-cache-dir outputs/cache/mean_pool_full_20260520_rerun --index-dir data/processed/index_stable_page_ids
+```
+
+#### `scripts/command/` 与辅助分析脚本
+
+| 脚本 | 作用 |
+| ---- | ---- |
+| `scripts/command/run_step3_clean.py` | 预览或清理 Step 3 结果目录与索引页 |
+| `scripts/command/check_phase4_progress.sh` | 轮询 Phase 4 长任务进度 |
+| `scripts/analyze_phase4_trace.py` | 汇总 `phase4_trace.jsonl`，生成 `slice_metrics.csv` 与桶统计 |
+| `scripts/backfill_step3_phase4_schema.py` | 为阶段三 stable run 回填 Phase 4 兼容 schema 产物 |
+
+示例：
+
+```bash
+python main.py command step3-clean --run-names smoke_eval_longdocurl_K4_q5 --clean-outputs --clean-index --dry-run
+python main.py command trace-analyze --trace outputs/eval_reports/phase4_adaptive_neighbors_cache_full_20260520/phase4_trace.jsonl --out outputs/eval_reports/phase4_adaptive_neighbors_cache_full_20260520/slice_metrics.csv
 ```
 
 ---
@@ -611,7 +616,7 @@ python scripts/run_step3_clean.py --all --yes
 - [ ] 将 ColPali base + adapter 下载到项目内 `.cache/huggingface/`
 - [ ] **明确下载 DocumentQA 所需资源**：`0_mmlb_data.tar.gz`（元数据）+ `5_docqa_image.tar.gz`（DocumentQA 页面图像），解压到 `data/MMLongBench/raw/`
 - [ ] 验证项目内模型缓存与数据目录可读取
-- [ ] 运行 `python scripts/check_env.py`，全部项通过
+- [ ] 运行 `python main.py command check-env`，全部项通过
 
 > **v2 对齐说明**：Phase 2 的主闭环依赖 DocumentQA 子集，因此 Phase 1 的前置资源准备明确围绕 DocumentQA 展开（下载 `5_docqa_image.tar.gz` 而非泛化的"一个任务图像包"）。其余任务族（icl/niah/summ/vrag）的图像包可在 Phase 2 管线跑通后按需补充下载。
 
@@ -928,9 +933,9 @@ class GroundTruthLoader:
 
 **当前实现状态（2026-05-16 同步）**：
 
-- Step 3.1 已有可执行脚本：`scripts/run_step3_eval.py`
-- Linux 主平台统一先执行 `source ./scripts/env.sh`，评测脚本默认以项目内 Hugging Face 缓存 + offline 模式运行
-- Step 3 清理入口已补齐：`scripts/run_step3_clean.py`
+- Step 3.1 已有可执行脚本：`scripts/run/run_step3_eval.py`
+- Linux 主平台统一先执行 `source ./scripts/command/env.sh`，随后优先通过 `python main.py step3 eval ...` 调用评测入口
+- Step 3 清理入口已补齐：`scripts/command/run_step3_clean.py`
 - 当前 stable 协议已从“仅按 `query.doc_id` 默认候选”升级为“优先按 `Query.candidate_page_ids` 决定样本级候选范围”
 - 支持 `--stats-only`、`--max-queries`、`--query-offset`、`--skip-index-build`，适合先做局部验证
 - 清理脚本支持 `--run-names`、`--subtasks`、`--lengths` 与 `--all`，默认 dry-run 预览，适合在重跑前清理旧结果与局部索引
@@ -973,68 +978,88 @@ class GroundTruthLoader:
 
 ### Phase 4：进阶方法研究与实现（5.26 – 6.2）
 
-**目标**：设计并实现一种原创的改进方法，通过实验验证有效性。
+**目标**：在不破坏 Phase 3 stable baseline 的前提下，实现 query-adaptive two-stage coarse-to-fine retrieval，并完成 valid-only 全量消融与结果分析。
 
-> **2026-05-16 同步说明**：Phase 4 尚未开始。当前仓库仍无 `src/zeroshot_vdr/advanced/` 目录，但已具备三处可直接复用的扩展点：`IndexStore.get_mean_pooled_view()`、`RetrievalPipeline` 中的 `candidate_strategy="mean_pool_topN"`、以及 `batched_maxsim_variable()`。
+> **2026-05-20 同步说明**：Phase 4 主线已经完成。`src/zeroshot_vdr/advanced/` 已落地，`scripts/run/run_phase4_eval.py` 与 `main.py` 已提供统一实验入口，valid-only 全量实验矩阵与 cache 版本均已跑通；当前推荐方法为 `adaptive_neighbors + mean-pool cache`。
 
-#### 补充方向 A：查询感知的自适应索引压缩
+#### 补充方向 A：查询感知的自适应索引压缩（暂缓）
 
-| 步骤 | 内容                                                   |
-| ---- | ------------------------------------------------------ |
-| 4A.1 | 实现 Patch 信息量评分器（信息熵 / 与均值池化的偏离度） |
-| 4A.2 | 对每页保留 top-m 个高信息量 patch embeddings           |
-| 4A.3 | 实验中对比不同 m 值下的 检索性能 vs 存储开销           |
-| 4A.4 | 目标：在不显著损伤 hardest slices 的前提下压缩索引体量 |
+方向 A 在当前迭代中未进入正式实现，主要原因是 hardest slices 仍强依赖细粒度 patch 证据，激进压缩更容易直接伤害质量。该方向保留为后续补充实验或未来工作。
 
-**计划落地位置**：`src/zeroshot_vdr/advanced/patch_pruner.py`（尚未创建）
+#### 主线方向 B：查询自适应的两阶段粗精检索（已完成）
 
-#### 主线方向 B：查询自适应的两阶段粗精检索
+| Stage | 实际落地内容 | 状态 |
+| ---- | ------------ | ---- |
+| Stage 0 | 复现 Phase 3 baseline，固定 valid-only 主比较口径 | [x] |
+| Stage 1 | 新增 Phase 4 配置与 `advanced/` 目录 | [x] |
+| Stage 2 | 实现 page_id 解析与邻页工具函数 | [x] |
+| Stage 3 | 实现 adaptive top-N 选择逻辑 | [x] |
+| Stage 4 | 实现 fixed top-N `TwoStageRetriever` 最小版本 | [x] |
+| Stage 5 | 接入 `MeanPoolCache`，并修复 full cache 构建 OOM 问题 | [x] |
+| Stage 6 | 将 adaptive top-N 接入运行时 | [x] |
+| Stage 7 | 将 neighbor expansion 接入运行时 | [x] |
+| Stage 8 | 落地 `scripts/run/run_phase4_eval.py` 评测入口 | [x] |
+| Stage 9 | 落地 per-query trace、`slice_metrics.csv` 与 `bucket_metrics.csv` | [x] |
+| Stage 10 | 完成 full valid-only 消融与里程碑报告 | [x] |
 
-| 步骤 | 内容                                                           |
-| ---- | -------------------------------------------------------------- |
-| 4B.1 | 第一阶段：页面 mean-pooled 表示做粗筛，候选规模采用自适应 top-N 而非固定 top-50 |
-| 4B.2 | 第二阶段：在缩小后的候选集上执行 full MaxSim 精排 -> top-k     |
-| 4B.3 | 引入邻页扩展，针对多页证据与邻页混淆场景做补偿                 |
-| 4B.4 | 目标：在 14,385 条有效标注查询上保持或提升质量，并降低长上下文切片延迟 |
+#### 当前落地位置
 
-**计划落地位置**：优先新增 `src/zeroshot_vdr/advanced/two_stage.py`（尚未创建）；若先做最小实现，也可先在 `retrieval/pipeline.py` 中落地可运行版本
+- 两阶段检索主实现：`src/zeroshot_vdr/advanced/two_stage.py`
+- 邻页扩展与 page_id 解析：`src/zeroshot_vdr/advanced/neighbors.py`
+- Mean-pool cache：`src/zeroshot_vdr/advanced/mean_pool_cache.py`
+- Trace / profiling：`src/zeroshot_vdr/advanced/profiling.py`
+- Phase 4 评测入口：`scripts/run/run_phase4_eval.py`
+- Trace 汇总脚本：`scripts/analyze_phase4_trace.py`
+- 统一入口：`main.py`
+- 单元测试：`tests/phase4/test_neighbors.py`、`tests/phase4/test_adaptive.py`、`tests/phase4/test_two_stage.py`、`tests/phase4/test_mean_pool_cache.py`
 
-#### 当前已具备的代码扩展点
+#### 主结果汇总（14,385 valid-only queries）
 
-- `src/zeroshot_vdr/indexing/store.py`：`get_mean_pooled_view()`
-- `src/zeroshot_vdr/retrieval/pipeline.py`：`candidate_strategy="mean_pool_topN"`
-- `src/zeroshot_vdr/retrieval/scoring.py`：`batched_maxsim_variable()`
+| Method | Recall@10 | nDCG@10 | Avg Latency (s) | P95 Latency (s) | Avg Rerank Candidates | 备注 |
+| ------ | --------: | ------: | --------------: | --------------: | --------------------: | ---- |
+| Phase 3 Full MaxSim | 0.8517 | 0.6325 | 0.0716 | 0.1384 | 32.7 | valid-only baseline |
+| Fixed Top-32 | 0.8482 | 0.6308 | 0.0794 | 0.1434 | 19.0 | 更快候选数，但有小幅掉点 |
+| Fixed Top-64 | 0.8513 | 0.6325 | 0.0889 | 0.1800 | 26.8 | 质量接近 baseline |
+| Fixed Top-128 | 0.8517 | 0.6326 | 0.0907 | 0.1989 | 32.2 | 基本回到 baseline 质量，但时延更差 |
+| Adaptive | 0.8482 | 0.6308 | 0.0790 | 0.1417 | 19.0 | 自适应候选规模与 Top-32 接近 |
+| Adaptive + Neighbor | 0.8523 | 0.6325 | 0.0796 | 0.1437 | 19.8 | 无 cache 情况下最佳总体 Recall |
+| Fixed Top-64 + Cache | 0.8513 | 0.6325 | 0.0650 | 0.1178 | 26.8 | 与无 cache 同质，明显更快 |
+| Adaptive + Cache | 0.8482 | 0.6308 | 0.0592 | 0.0847 | 19.0 | 与无 cache 同质，粗筛开销大幅下降 |
+| Adaptive + Neighbor + Cache | 0.8523 | 0.6325 | 0.0600 | 0.0858 | 19.8 | 当前推荐方法 |
 
-#### 实验设计（两方向通用）
+#### 当前结论
 
-- [ ] Baseline（stable page id + query-scoped candidate baseline）vs. 改进方法的 4 项指标对比
-- [ ] 效率对比（检索延迟、索引大小、显存占用）
-- [ ] 消融实验（验证改进中各组件贡献）
-- [ ] 全部主比较均固定在 14,385 条有效标注查询上完成
+- Phase 4 满足既定硬性质量标准：推荐方法的 Recall@10 没有低于 Phase 3 baseline 0.005 以内阈值，nDCG@10 与 baseline 基本持平。
+- 推荐方法为 `adaptive_neighbors + mean-pool cache`：它在总体上略高于 Phase 3 baseline 的 Recall@10，同时把平均延迟从约 0.0716 s/query 降到约 0.0600 s/query。
+- 改善最明显的切片集中在 `slidevqa/K64` 与 `slidevqa/K128`；`longdocurl/K128` 和 `mmlongdoc/K128` 上存在轻微质量回落，但换来了显著的时延与 rerank 候选规模下降。
+- Full `MeanPoolCache` 已可稳定构建并复用：当前 87,090 页的 cache 目录为 `outputs/cache/mean_pool_full_20260520_rerun`，体量约 26 MB，而原 patch index 约 87 GB。
 
 #### Phase 4 产出
 
-- [ ] `src/zeroshot_vdr/advanced/` 目录下改进代码
-- [ ] 对比实验表格（指标 + 效率）
-- [ ] 消融实验结果
-- [ ] 实验中发现的任何 insight（写入报告）
+- [x] `src/zeroshot_vdr/advanced/` 目录下改进代码
+- [x] `scripts/run/run_phase4_eval.py`、`scripts/analyze_phase4_trace.py` 与 `main.py`
+- [x] valid-only 全量主表、slice 表、bucket 表与 per-query trace
+- [x] cache 与 no-cache 对比实验
+- [x] `docs/Milestone_Report_Phase4.md`
 
 ---
 
 ### Phase 5：报告撰写与答辩准备（6.3 – 6.9）
 
-**目标**：完成高质量的实验报告和答辩 PPT，整理代码并提交。
+**目标**：基于已经完成的 Phase 3 / Phase 4 结果，收口最终论文、答辩材料与可提交代码包。
+
+> **2026-05-20 同步说明**：Phase 4 的代码、实验矩阵和里程碑报告已经齐备，Phase 5 的重点已从“补实验”切换为“整理主表、提炼结论、撰写正式报告和答辩材料”。
 
 #### Step 5.1 实验报告（NeurIPS 模板，英文，正文 8-9 页）
 
 | 章节         | 负责   | 内容要点                           |
 | ------------ | ------ | ---------------------------------- |
-| Introduction | 共同   | 任务背景、挑战、本项目贡献         |
+| Introduction | 共同   | 任务背景、长文档页级检索难点、本项目贡献 |
 | Related Work | 共同   | ColPali、ColBERT、VLM 文档检索综述 |
-| Method       | 成员 A | 基础系统架构图 + 改进方法伪代码    |
-| Experiments  | 成员 B | 实验设置、主表结果、消融/效率对比  |
-| Analysis     | 成员 B | Bad Case 分析、局限性与未来方向    |
-| Conclusion   | 共同   | 总结 + 展望                        |
+| Method       | 成员 A | Stable baseline、two-stage retrieval、mean-pool cache、neighbor expansion |
+| Experiments  | 成员 B | Phase 3 baseline、Phase 4 主表、cache 对比、slice 结果 |
+| Analysis     | 成员 B | slidevqa 长上下文收益、K128 trade-off、局限性与未来工作 |
+| Conclusion   | 共同   | 质量-效率结论与后续方向 |
 
 #### Step 5.2 答辩 PPT
 
@@ -1044,14 +1069,16 @@ class GroundTruthLoader:
 
 #### Step 5.3 代码整理
 
-- [ ] 统一代码风格（docstring、type hints）
-- [ ] 删除调试/死代码
-- [ ] 编写 `README.md`（项目说明、快速开始、目录说明）
-- [ ] 确认 `uv sync` 一键复现环境
-- [ ] 打包提交
+- [x] 完成脚本目录重组（`scripts/run/`、`scripts/command/`）
+- [x] 新增 `main.py` 统一入口
+- [ ] 统一剩余 docstring、type hints 与帮助文本
+- [ ] 编写或补齐最终 `README.md` 的快速开始与复现实验指引
+- [ ] 复核 `uv sync` / `.venv` 环境的一键复现说明
+- [ ] 最终清理调试产物并打包提交
 
 #### Phase 5 产出
 
+- [x] `docs/Milestone_Report_Phase4.md`
 - [ ] 实验报告 PDF
 - [ ] 答辩 PPT
 - [ ] 最终代码包
@@ -2071,34 +2098,35 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 
 ### Milestone 1：环境与数据就绪（5.12）
 
-- [ ] Conda 环境 `zeroshotvdr` 创建成功
-- [ ] `uv sync` 无报错完成
-- [ ] `python scripts/check_env.py` 全部 PASS
-- [ ] ColPali-v1.3 权重下载至本地
-- [ ] DocumentQA 数据（`0_mmlb_data.tar.gz` + `5_docqa_image.tar.gz`）已下载解压，统计信息已记录
+- [x] Conda 环境 `zeroshotvdr` 创建成功
+- [x] `uv sync` 无报错完成
+- [x] `python main.py command check-env` 全部 PASS
+- [x] ColPali-v1.3 权重下载至本地
+- [x] DocumentQA 数据（`0_mmlb_data.tar.gz` + `5_docqa_image.tar.gz`）已下载解压，统计信息已记录
 
 ### Milestone 2：基础管线跑通（5.22）
 
-- [ ] `src/zeroshot_vdr/data/`：DocumentQA 适配器 + 语料构建可用
-- [ ] `src/zeroshot_vdr/indexing/`：可离线构建 & 加载索引（逐页独立存储）
-- [ ] `src/zeroshot_vdr/retrieval/`：流水线式检索，查询→Top-k 结果端到端
-- [ ] `src/zeroshot_vdr/evaluation/`：四项指标计算可用，与数据集解耦
-- [ ] 端到端管线在 DocumentQA 10 条查询子集上输出合理结果
+- [x] `src/zeroshot_vdr/data/`：DocumentQA 适配器 + 语料构建可用
+- [x] `src/zeroshot_vdr/indexing/`：可离线构建 & 加载索引（逐页独立存储）
+- [x] `src/zeroshot_vdr/retrieval/`：流水线式检索，查询→Top-k 结果端到端
+- [x] `src/zeroshot_vdr/evaluation/`：四项指标计算可用，与数据集解耦
+- [x] 端到端管线在 DocumentQA 10 条查询子集上输出合理结果
 
 ### Milestone 3：基础评测完成 + Milestone 报告（5.28）
 
-- [ ] DocumentQA 三子任务 × K32 主档位全量评测结果（4 指标 x 4 k 值）
-- [ ] 跨档位趋势图（K4-K128）和跨子任务对比分析
-- [ ] Bad Cases 分析完成
-- [ ] 改进方向已确定
-- [ ] Milestone 报告提交
+- [x] DocumentQA 三子任务 × 全部长度档位的 stable baseline 全量评测结果
+- [x] 跨档位趋势图（K4-K128）和跨子任务对比分析
+- [x] Bad Cases 分析完成，并剥离 `no_ground_truth` 样本
+- [x] 改进方向已确定
+- [x] `docs/Milestone_Report_Phase3.md` 已提交
 
 ### Milestone 4：进阶方法完成（6.2）
 
-- [ ] 改进方法代码实现完毕
-- [ ] Baseline vs. 改进方法对比实验完成
-- [ ] 消融实验完成
-- [ ] 效率对比数据齐全
+- [x] 改进方法代码实现完毕
+- [x] Baseline vs. 改进方法对比实验完成
+- [x] 消融实验完成
+- [x] 效率对比数据齐全
+- [x] `docs/Milestone_Report_Phase4.md` 已提交
 
 ### Milestone 5：最终提交（6.9）
 
