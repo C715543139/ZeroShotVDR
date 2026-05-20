@@ -28,6 +28,7 @@ class FakeIndexStore:
         self._page_ids: list[str] = []
         self._score_candidates_calls: list[list[str]] = []
         self._page_embeddings: dict[str, torch.Tensor] = {}
+        self._get_mean_pooled_view_calls: list[list[str]] = []
 
     def set_universe(self, page_ids: list[str], means: torch.Tensor | None = None):
         self._page_ids = list(page_ids)
@@ -35,6 +36,7 @@ class FakeIndexStore:
             self._page_means = means
 
     def get_mean_pooled_view(self, page_ids):
+        self._get_mean_pooled_view_calls.append(list(page_ids))
         if self._page_means is None:
             # 生成随机 embeddings
             dim = 128
@@ -97,6 +99,19 @@ class FakePipeline:
                 )
             )
         return results
+
+
+class FakeMeanPoolCache:
+    def __init__(self, page_ids: list[str], embeddings: torch.Tensor):
+        self._page_ids = list(page_ids)
+        self._embeddings = embeddings
+        self._id_to_idx = {pid: idx for idx, pid in enumerate(self._page_ids)}
+        self.calls: list[list[str]] = []
+
+    def get(self, page_ids: list[str]) -> torch.Tensor:
+        self.calls.append(list(page_ids))
+        indices = [self._id_to_idx[pid] for pid in page_ids]
+        return self._embeddings[indices]
 
 
 # ===========================================================================
@@ -272,6 +287,42 @@ class TestTwoStageRetriever:
         assert trace.coarse_ms >= 0
         assert trace.rerank_ms >= 0
         assert trace.total_ms >= 0
+
+    def test_cache_path_matches_no_cache_results(self):
+        page_means = torch.randn(50, 128)
+        universe = [f"doc/p{i}" for i in range(50)]
+
+        pipeline_no_cache = FakePipeline()
+        store_no_cache = FakeIndexStore(page_means=page_means)
+        store_no_cache.set_universe(universe, means=page_means)
+        retriever_no_cache = TwoStageRetriever(
+            pipeline_no_cache,
+            store_no_cache,
+            coarse_top_n=10,
+        )
+
+        pipeline_cache = FakePipeline()
+        store_cache = FakeIndexStore(page_means=page_means)
+        store_cache.set_universe(universe, means=page_means)
+        cache = FakeMeanPoolCache(universe, page_means)
+        retriever_cache = TwoStageRetriever(
+            pipeline_cache,
+            store_cache,
+            coarse_top_n=10,
+            use_mean_pool_cache=True,
+            mean_pool_cache=cache,
+        )
+
+        query = make_query(candidate_page_ids=universe)
+        no_cache_output = retriever_no_cache.retrieve(query, top_k=5)
+        cache_output = retriever_cache.retrieve(query, top_k=5)
+
+        assert [r.page_id for r in no_cache_output.results] == [
+            r.page_id for r in cache_output.results
+        ]
+        assert pipeline_no_cache._score_candidates_calls == pipeline_cache._score_candidates_calls
+        assert store_cache._get_mean_pooled_view_calls == []
+        assert cache.calls == [universe]
 
     def test_empty_universe(self):
         pipeline = FakePipeline()

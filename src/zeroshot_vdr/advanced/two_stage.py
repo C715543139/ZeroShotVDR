@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 
 from zeroshot_vdr.contracts import Query, RetrievalResult
+from zeroshot_vdr.advanced.mean_pool_cache import MeanPoolCache
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,12 @@ class TwoStageRetriever:
         邻页窗口大小；0 表示不扩展
     neighbor_seed_n : int
         对前 seed_n 个 coarse page 扩展邻页
+    use_mean_pool_cache : bool
+        是否启用 mean-pool cache
+    mean_pool_cache_dir : str | None
+        mean-pool cache 目录；若存在则自动加载
+    mean_pool_cache : MeanPoolCache | None
+        已初始化的 cache 对象；优先于 mean_pool_cache_dir
     """
 
     def __init__(
@@ -272,6 +279,9 @@ class TwoStageRetriever:
         flat_margin: float = 0.035,
         neighbor_window: int = 0,
         neighbor_seed_n: int = 8,
+        use_mean_pool_cache: bool = False,
+        mean_pool_cache_dir: str | None = None,
+        mean_pool_cache: MeanPoolCache | None = None,
     ):
         self.pipeline = base_pipeline
         self.index_store = index_store
@@ -283,6 +293,24 @@ class TwoStageRetriever:
         self.flat_margin = flat_margin
         self.neighbor_window = neighbor_window
         self.neighbor_seed_n = neighbor_seed_n
+        self.use_mean_pool_cache = use_mean_pool_cache
+        self.mean_pool_cache_dir = mean_pool_cache_dir
+        self.mean_pool_cache = mean_pool_cache
+
+        if self.use_mean_pool_cache and self.mean_pool_cache is None:
+            if self.mean_pool_cache_dir is None:
+                raise ValueError(
+                    "启用 mean-pool cache 时必须提供 mean_pool_cache_dir 或 mean_pool_cache"
+                )
+            cache = MeanPoolCache(self.mean_pool_cache_dir)
+            if cache.exists():
+                cache.load()
+                self.mean_pool_cache = cache
+            else:
+                logger.warning(
+                    "MeanPoolCache 不存在，将回退为 index_store.get_mean_pooled_view: %s",
+                    self.mean_pool_cache_dir,
+                )
 
         # 校验 method
         _valid_methods = {"fixed_topn", "adaptive", "adaptive_neighbors"}
@@ -290,6 +318,22 @@ class TwoStageRetriever:
             raise ValueError(
                 f"不支持的 method: {method}，可选: {_valid_methods}"
             )
+
+    def _get_mean_pooled_view(
+        self,
+        universe_ids: list[str],
+    ) -> tuple[torch.Tensor, list[str]]:
+        if self.mean_pool_cache is None:
+            return self.index_store.get_mean_pooled_view(universe_ids)
+
+        try:
+            return self.mean_pool_cache.get(universe_ids), list(universe_ids)
+        except KeyError as exc:
+            logger.warning(
+                "MeanPoolCache 缺少 page_id，回退为 index_store.get_mean_pooled_view: %s",
+                exc,
+            )
+            return self.index_store.get_mean_pooled_view(universe_ids)
 
     # ------------------------------------------------------------------
     # 主检索接口
@@ -328,7 +372,7 @@ class TwoStageRetriever:
 
         # ---- 阶段 1: mean-pool coarse retrieval ----
         coarse_start = time.perf_counter()
-        page_means, pids = self.index_store.get_mean_pooled_view(universe_ids)
+        page_means, pids = self._get_mean_pooled_view(universe_ids)
 
         if page_means.numel() == 0:
             trace = TwoStageTrace(

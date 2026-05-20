@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -32,24 +34,12 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import sitecustomize  # noqa: F401
-import pandas as pd
-
-from zeroshot_vdr.advanced.two_stage import TwoStageRetriever, TwoStageOutput
-from zeroshot_vdr.config import (
-    get_evaluation_config,
-    get_index_config,
-    get_model_config,
-    get_retrieval_config,
-    load_config,
-)
-from zeroshot_vdr.data.adapters import DocumentQAAdapter
-from zeroshot_vdr.evaluation.metrics import compute_all_metrics, compute_metrics_by_group
-from zeroshot_vdr.indexing.encoder import PageEncoder
-from zeroshot_vdr.indexing.store import IndexStore
-from zeroshot_vdr.retrieval.pipeline import RetrievalPipeline
-from zeroshot_vdr.utils import format_duration, resolve_path, setup_logging
+import yaml
 
 
 # ===========================================================================
@@ -88,6 +78,10 @@ def parse_args() -> argparse.Namespace:
         help="输出根目录；默认 outputs/eval_reports",
     )
     parser.add_argument(
+        "--run-name", type=str, default=None,
+        help="输出运行目录名；默认 phase4_{method}",
+    )
+    parser.add_argument(
         "--device", type=str, default=None,
         help="覆盖模型设备",
     )
@@ -98,46 +92,58 @@ def parse_args() -> argparse.Namespace:
 
     # Phase 4 特有参数
     parser.add_argument(
-        "--method", type=str, default="fixed_topn",
+        "--method", type=str, default=None,
         choices=["fixed_topn", "adaptive", "adaptive_neighbors"],
         help="Phase 4 检索方法",
     )
     parser.add_argument(
-        "--coarse-top-n", type=int, default=64,
+        "--coarse-top-n", type=int, default=None,
         help="固定 coarse top-N（method=fixed_topn 时使用）",
     )
     parser.add_argument(
-        "--min-candidates", type=int, default=32,
+        "--min-candidates", type=int, default=None,
         help="adaptive 下限",
     )
     parser.add_argument(
-        "--max-candidates", type=int, default=128,
+        "--max-candidates", type=int, default=None,
         help="adaptive 上限",
     )
     parser.add_argument(
-        "--base-ratio", type=float, default=0.20,
+        "--base-ratio", type=float, default=None,
         help="adaptive 基础比例",
     )
     parser.add_argument(
-        "--flat-margin", type=float, default=0.035,
+        "--flat-margin", type=float, default=None,
         help="adaptive 平坦阈值",
     )
     parser.add_argument(
-        "--neighbor-window", type=int, default=0,
+        "--neighbor-window", type=int, default=None,
         help="邻页窗口大小",
     )
     parser.add_argument(
-        "--neighbor-seed-n", type=int, default=8,
+        "--neighbor-seed-n", type=int, default=None,
         help="邻页扩展的 seed 数量",
+    )
+    parser.add_argument(
+        "--use-mean-pool-cache",
+        type=_parse_bool_flag,
+        nargs="?",
+        const=True,
+        default=None,
+        help="是否启用 mean-pool cache；可写 true/false，省略值时表示 true",
+    )
+    parser.add_argument(
+        "--mean-pool-cache-dir", type=str, default=None,
+        help="mean-pool cache 目录；默认使用 retrieval.phase4.mean_pool_cache_dir",
     )
 
     # 过滤与 trace
     parser.add_argument(
-        "--valid-only", action="store_true",
+        "--valid-only", action="store_true", default=False,
         help="仅评测有有效 ground truth 的 query（14,385 条）",
     )
     parser.add_argument(
-        "--trace-enabled", action="store_true",
+        "--trace-enabled", action="store_true", default=None,
         help="输出 per-query trace (phase4_trace.jsonl)",
     )
 
@@ -158,6 +164,18 @@ def parse_args() -> argparse.Namespace:
 # ===========================================================================
 # 辅助函数（复用自 run_step3_eval.py）
 # ===========================================================================
+
+
+def _parse_bool_flag(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"无法解析布尔值: {value}")
 
 
 def _percentile(values: list[float], q: float) -> float:
@@ -217,14 +235,144 @@ def _resolve_run_dir(
     args: argparse.Namespace,
     evaluation_cfg: dict,
 ) -> Path:
-    """根据 method 确定固定输出目录。
+    """根据 method 或 run_name 确定输出目录。
 
-    模式: outputs/eval_reports/phase4_{method}/
+    模式:
+    - 指定 run_name: outputs/eval_reports/{run_name}/
+    - 默认: outputs/eval_reports/phase4_{method}/
     """
+    from zeroshot_vdr.utils import resolve_path
+
     output_root = resolve_path(
         args.output_dir or evaluation_cfg.get("output_dir", "outputs/eval_reports")
     )
+    if args.run_name:
+        return output_root / args.run_name
     return output_root / f"phase4_{args.method}"
+
+
+def _resolve_phase4_settings(
+    args: argparse.Namespace,
+    retrieval_cfg: dict[str, Any],
+) -> argparse.Namespace:
+    phase4_cfg = retrieval_cfg.get("phase4", {})
+
+    args.method = (
+        args.method if args.method is not None else phase4_cfg.get("method", "fixed_topn")
+    )
+    args.coarse_top_n = (
+        args.coarse_top_n
+        if args.coarse_top_n is not None
+        else phase4_cfg.get("coarse_top_n", 64)
+    )
+    args.min_candidates = (
+        args.min_candidates
+        if args.min_candidates is not None
+        else phase4_cfg.get("min_candidates", 32)
+    )
+    args.max_candidates = (
+        args.max_candidates
+        if args.max_candidates is not None
+        else phase4_cfg.get("max_candidates", 128)
+    )
+    args.base_ratio = (
+        args.base_ratio
+        if args.base_ratio is not None
+        else phase4_cfg.get("base_ratio", 0.20)
+    )
+    args.flat_margin = (
+        args.flat_margin
+        if args.flat_margin is not None
+        else phase4_cfg.get("flat_margin", 0.035)
+    )
+    args.neighbor_window = (
+        args.neighbor_window
+        if args.neighbor_window is not None
+        else phase4_cfg.get("neighbor_window", 0)
+    )
+    args.neighbor_seed_n = (
+        args.neighbor_seed_n
+        if args.neighbor_seed_n is not None
+        else phase4_cfg.get("neighbor_seed_n", 8)
+    )
+    args.use_mean_pool_cache = (
+        args.use_mean_pool_cache
+        if args.use_mean_pool_cache is not None
+        else phase4_cfg.get("use_mean_pool_cache", False)
+    )
+    args.mean_pool_cache_dir = (
+        args.mean_pool_cache_dir
+        or phase4_cfg.get("mean_pool_cache_dir")
+    )
+    args.trace_enabled = (
+        args.trace_enabled
+        if args.trace_enabled is not None
+        else phase4_cfg.get("trace_enabled", False)
+    )
+    return args
+
+
+def _page_id_checksum(page_ids: list[str]) -> str:
+    digest = hashlib.sha1()
+    for page_id in page_ids:
+        digest.update(page_id.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _load_or_build_mean_pool_cache(
+    *,
+    store: IndexStore,
+    cache_dir: Path,
+    index_dir: Path,
+    required_page_ids: set[str],
+    logger,
+) -> MeanPoolCache:
+    from zeroshot_vdr.advanced.mean_pool_cache import MeanPoolCache, build_mean_pool_cache
+
+    cache = MeanPoolCache(cache_dir)
+    store_page_ids = store.list_page_ids()
+    cache_page_ids = [page_id for page_id in store_page_ids if page_id in required_page_ids]
+    if not cache_page_ids:
+        raise RuntimeError("当前评测范围没有可用于构建 MeanPoolCache 的 page_id")
+    cache_meta = {}
+    rebuild_reason: str | None = None
+
+    if cache.exists():
+        cache.load()
+        cache_meta = cache.load_meta()
+        if cache_meta.get("index_dir") != str(index_dir):
+            rebuild_reason = "index_dir 变化"
+        elif any(page_id not in cache for page_id in required_page_ids):
+            rebuild_reason = "当前评测范围存在 cache miss"
+    else:
+        rebuild_reason = "缓存不存在"
+
+    if rebuild_reason is not None:
+        logger.info("构建 MeanPoolCache: %s (scope_pages=%d)", rebuild_reason, len(cache_page_ids))
+        meta = {
+            "index_dir": str(index_dir),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "page_id_checksum": _page_id_checksum(cache_page_ids),
+            "scope_num_pages": len(cache_page_ids),
+        }
+        build_mean_pool_cache(store, cache_page_ids, cache, meta=meta)
+        cache.load()
+        cache_meta = cache.load_meta()
+    else:
+        logger.info(
+            "MeanPoolCache 已加载: %s (num_pages=%s)",
+            cache_dir,
+            cache_meta.get("num_pages", len(cache.page_ids or [])),
+        )
+
+    logger.info(
+        "MeanPoolCache 就绪: dir=%s num_pages=%s checksum=%s",
+        cache_dir,
+        cache_meta.get("num_pages", len(cache.page_ids or [])),
+        cache_meta.get("page_id_checksum"),
+    )
+    return cache
 
 
 # ===========================================================================
@@ -238,6 +386,10 @@ def _build_metrics_tables(
     query_lookup: dict[str, Any],
     k_values: list[int],
 ) -> dict[str, pd.DataFrame]:
+    import pandas as pd
+
+    from zeroshot_vdr.evaluation.metrics import compute_all_metrics, compute_metrics_by_group
+
     overall = compute_all_metrics(retrieval_results, ground_truth, k_values=k_values)
 
     by_subtask = compute_metrics_by_group(
@@ -290,6 +442,78 @@ def _save_metrics_tables(run_dir: Path, tables: dict[str, pd.DataFrame]) -> None
             continue
         df.to_csv(run_dir / f"metrics_{name}.csv", index=False, encoding="utf-8-sig")
 
+    summary = tables.get("summary")
+    if summary is not None and not summary.empty:
+        summary.to_csv(run_dir / "metrics.csv", index=False, encoding="utf-8-sig")
+
+
+def _save_config_used(
+    run_dir: Path,
+    config: dict[str, Any],
+    args: argparse.Namespace,
+) -> None:
+    config_used = copy.deepcopy(config)
+    retrieval_cfg = config_used.setdefault("retrieval", {})
+    phase4_cfg = retrieval_cfg.setdefault("phase4", {})
+    phase4_cfg.update({
+        "enabled": True,
+        "method": args.method,
+        "coarse_top_n": args.coarse_top_n,
+        "min_candidates": args.min_candidates,
+        "max_candidates": args.max_candidates,
+        "base_ratio": args.base_ratio,
+        "flat_margin": args.flat_margin,
+        "neighbor_window": args.neighbor_window,
+        "neighbor_seed_n": args.neighbor_seed_n,
+        "use_mean_pool_cache": args.use_mean_pool_cache,
+        "mean_pool_cache_dir": args.mean_pool_cache_dir,
+        "trace_enabled": args.trace_enabled,
+    })
+
+    with open(run_dir / "config_used.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(config_used, f, allow_unicode=True, sort_keys=False)
+
+
+def _save_trace_analysis(run_dir: Path, trace_lines: list[str]) -> None:
+    import pandas as pd
+
+    from zeroshot_vdr.advanced.profiling import (
+        compute_slice_metrics,
+        compute_universe_bucket_metrics,
+    )
+
+    traces = [json.loads(line) for line in trace_lines]
+    slice_metrics = compute_slice_metrics(traces)
+    bucket_metrics = compute_universe_bucket_metrics(traces)
+    combined_metrics = slice_metrics + bucket_metrics
+
+    if combined_metrics:
+        pd.DataFrame(combined_metrics).to_csv(
+            run_dir / "slice_metrics.csv", index=False, encoding="utf-8-sig"
+        )
+    if bucket_metrics:
+        pd.DataFrame(bucket_metrics).to_csv(
+            run_dir / "bucket_metrics.csv", index=False, encoding="utf-8-sig"
+        )
+
+    if traces:
+        total_ms = [float(trace.get("total_ms", 0.0)) for trace in traces]
+        coarse_ms = [float(trace.get("coarse_ms", 0.0)) for trace in traces]
+        rerank_ms = [float(trace.get("rerank_ms", 0.0)) for trace in traces]
+        universe_size = [float(trace.get("universe_size", 0.0)) for trace in traces]
+        coarse_top_n = [float(trace.get("coarse_top_n", 0.0)) for trace in traces]
+        summary = {
+            "num_traces": len(traces),
+            "methods": sorted({trace.get("method", "?") for trace in traces}),
+            "avg_total_ms": round(mean(total_ms), 3),
+            "avg_coarse_ms": round(mean(coarse_ms), 3),
+            "avg_rerank_ms": round(mean(rerank_ms), 3),
+            "avg_universe_size": round(mean(universe_size), 3),
+            "avg_coarse_top_n": round(mean(coarse_top_n), 3),
+        }
+        with open(run_dir / "trace_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+
 
 # ===========================================================================
 # Valid-only 过滤
@@ -335,6 +559,8 @@ def _load_page_encoder(
     dtype = _parse_torch_dtype(model_cfg.get("dtype"))
     batch_size = batch_size or index_cfg.get("batch_size", 4)
     storage_dtype = _parse_torch_dtype(index_cfg.get("storage_dtype", "float16"))
+
+    from zeroshot_vdr.indexing.encoder import PageEncoder
 
     try:
         return PageEncoder.from_pretrained(
@@ -393,6 +619,9 @@ def _encode_pages_worker(payload: dict) -> dict:
     pages = payload["pages"]
     if not pages:
         return {"device": device, "encoded_pages": 0}
+
+    from zeroshot_vdr.indexing.encoder import PageEncoder
+    from zeroshot_vdr.indexing.store import IndexStore
 
     model_cfg = payload["model_cfg"]
     dtype = _parse_torch_dtype(model_cfg.get("dtype"))
@@ -476,6 +705,20 @@ def _clear_checkpoint(run_dir: Path) -> None:
 
 def main() -> int:
     args = parse_args()
+
+    from zeroshot_vdr.advanced.two_stage import TwoStageRetriever
+    from zeroshot_vdr.config import (
+        get_evaluation_config,
+        get_index_config,
+        get_model_config,
+        get_retrieval_config,
+        load_config,
+    )
+    from zeroshot_vdr.data.adapters import DocumentQAAdapter
+    from zeroshot_vdr.indexing.store import IndexStore
+    from zeroshot_vdr.retrieval.pipeline import RetrievalPipeline
+    from zeroshot_vdr.utils import format_duration, resolve_path, setup_logging
+
     log_level = getattr(__import__("logging"), args.log_level)
     logger = setup_logging("phase4_eval", level=log_level)
 
@@ -485,6 +728,7 @@ def main() -> int:
     index_cfg = get_index_config(config)
     retrieval_cfg = get_retrieval_config(config).copy()
     evaluation_cfg = get_evaluation_config(config)
+    args = _resolve_phase4_settings(args, retrieval_cfg)
 
     subtasks = _resolve_subtasks(args, config)
     lengths = _resolve_lengths(args, config)
@@ -514,14 +758,16 @@ def main() -> int:
             logger.info("已清除旧输出目录: %s", run_dir)
 
     run_dir.mkdir(parents=True, exist_ok=True)
+    _save_config_used(run_dir, config, args)
 
     logger.info("Phase 4 评测开始: method=%s subtasks=%s lengths=%s", args.method, subtasks, lengths)
     logger.info("输出目录: %s", run_dir)
     logger.info(
-        "参数: coarse_top_n=%d min=%d max=%d ratio=%.2f margin=%.3f window=%d seed=%d",
+        "参数: coarse_top_n=%d min=%d max=%d ratio=%.2f margin=%.3f window=%d seed=%d cache=%s",
         args.coarse_top_n, args.min_candidates, args.max_candidates,
         args.base_ratio, args.flat_margin,
         args.neighbor_window, args.neighbor_seed_n,
+        args.use_mean_pool_cache,
     )
 
     # ---- 加载数据 ----
@@ -602,6 +848,19 @@ def main() -> int:
             model_cfg, index_cfg, args, device=retrieval_device,
         )
 
+    mean_pool_cache = None
+    if args.use_mean_pool_cache:
+        if not args.mean_pool_cache_dir:
+            raise ValueError("启用 mean-pool cache 时必须提供 mean_pool_cache_dir")
+        cache_dir = resolve_path(args.mean_pool_cache_dir)
+        mean_pool_cache = _load_or_build_mean_pool_cache(
+            store=store,
+            cache_dir=cache_dir,
+            index_dir=index_dir,
+            required_page_ids=required_page_ids,
+            logger=logger,
+        )
+
     # ---- 构建 Pipeline + TwoStageRetriever ----
     pipeline = RetrievalPipeline(
         model=page_encoder,
@@ -620,12 +879,15 @@ def main() -> int:
         flat_margin=args.flat_margin,
         neighbor_window=args.neighbor_window,
         neighbor_seed_n=args.neighbor_seed_n,
+        use_mean_pool_cache=args.use_mean_pool_cache,
+        mean_pool_cache_dir=args.mean_pool_cache_dir,
+        mean_pool_cache=mean_pool_cache,
     )
 
     # ---- 检索循环（支持断点续跑） ----
     retrieval_results: dict[str, list[str]] = {}
     query_latencies: list[float] = []
-    all_outputs: list[TwoStageOutput] = []
+    all_outputs: list[Any] = []
     trace_lines: list[str] = []
 
     # 尝试加载 checkpoint
@@ -742,6 +1004,7 @@ def main() -> int:
         trace_path = run_dir / "phase4_trace.jsonl"
         trace_path.write_text("\n".join(trace_lines) + "\n", encoding="utf-8")
         logger.info("trace 已保存: %s (%d 行)", trace_path, len(trace_lines))
+        _save_trace_analysis(run_dir, trace_lines)
 
     # ---- 清除 checkpoint（正常完成） ----
     _clear_checkpoint(run_dir)
@@ -769,6 +1032,8 @@ def main() -> int:
             "flat_margin": args.flat_margin,
             "neighbor_window": args.neighbor_window,
             "neighbor_seed_n": args.neighbor_seed_n,
+            "use_mean_pool_cache": args.use_mean_pool_cache,
+            "mean_pool_cache_dir": args.mean_pool_cache_dir,
         },
         "scope": {
             "subtasks": subtasks,
@@ -808,10 +1073,12 @@ def main() -> int:
         }
 
     if not tables["summary"].empty:
-        metrics_preview = tables["summary"].where(pd.notna(tables["summary"]), None)
+        metrics_preview = tables["summary"].where(tables["summary"].notna(), None)
         run_summary["metrics_preview"] = metrics_preview.to_dict(orient="records")
 
     with open(run_dir / "run_summary.json", "w", encoding="utf-8") as f:
+        json.dump(run_summary, f, ensure_ascii=False, indent=2)
+    with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(run_summary, f, ensure_ascii=False, indent=2)
 
     # ---- 日志输出 ----

@@ -5,18 +5,29 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
 
-from zeroshot_vdr.advanced.profiling import (
-    compute_slice_metrics,
-    compute_universe_bucket_metrics,
-    load_traces,
-)
+
+def _load_profiling_module():
+    profiling_path = SRC_ROOT / "zeroshot_vdr" / "advanced" / "profiling.py"
+    spec = importlib.util.spec_from_file_location("phase4_profiling", profiling_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载 profiling 模块: {profiling_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+profiling = _load_profiling_module()
+compute_slice_metrics = profiling.compute_slice_metrics
+compute_universe_bucket_metrics = profiling.compute_universe_bucket_metrics
+load_traces = profiling.load_traces
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--out", type=str, default=None,
-        help="输出目录；默认与 trace 同目录",
+        help="输出目录，或显式的 slice_metrics.csv 路径；默认与 trace 同目录",
     )
     return parser.parse_args()
 
@@ -39,25 +50,29 @@ def main() -> int:
         print(f"错误: trace 文件不存在: {trace_path}", file=sys.stderr)
         return 1
 
-    out_dir = Path(args.out) if args.out else trace_path.parent
+    out_arg = Path(args.out) if args.out else None
+    if out_arg and out_arg.suffix.lower() == ".csv":
+        out_dir = out_arg.parent
+        slice_path = out_arg
+    else:
+        out_dir = out_arg if out_arg else trace_path.parent
+        slice_path = out_dir / "slice_metrics.csv"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     traces = load_traces(trace_path)
     print(f"加载 {len(traces)} 条 trace")
 
-    # slice 指标
     slice_metrics = compute_slice_metrics(traces)
-    if slice_metrics:
-        slice_path = out_dir / "slice_metrics.csv"
-        keys = slice_metrics[0].keys()
+    bucket_metrics = compute_universe_bucket_metrics(traces)
+    combined_metrics = slice_metrics + bucket_metrics
+    if combined_metrics:
+        keys = combined_metrics[0].keys()
         with open(slice_path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=list(keys))
             writer.writeheader()
-            writer.writerows(slice_metrics)
-        print(f"slice 指标已保存: {slice_path} ({len(slice_metrics)} 组)")
+            writer.writerows(combined_metrics)
+        print(f"slice 指标已保存: {slice_path} ({len(combined_metrics)} 组)")
 
-    # universe bucket 指标
-    bucket_metrics = compute_universe_bucket_metrics(traces)
     if bucket_metrics:
         bucket_path = out_dir / "bucket_metrics.csv"
         keys = bucket_metrics[0].keys()
