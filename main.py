@@ -64,7 +64,7 @@ def _print_main_help() -> None:
     print("  python main.py phase4 eval --run-name smoke_fixed64 --method fixed_topn --coarse-top-n 64 --max-queries 50 --valid-only")
     print("  python main.py phase4 full")
     print("  python main.py command phase4-progress --watch")
-    print("  python main.py step3 analysis --run-dir outputs/eval_reports/step3_docqa_full_dual3090")
+    print("  python main.py step3 analysis --run-dir outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids")
 
 
 def _print_group_help(group: str) -> None:

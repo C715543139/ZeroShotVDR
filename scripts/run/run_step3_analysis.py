@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-dir",
         type=str,
-        default="outputs/eval_reports/step3_docqa_full_dual3090",
+        default="outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids",
         help="Step 3.1 输出目录",
     )
     parser.add_argument(
