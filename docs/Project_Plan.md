@@ -8,7 +8,7 @@
 
 > **v9 同步说明（2026-05-20）**：本计划已按当前 Phase 4 完成状态同步。`src/zeroshot_vdr/advanced/` 已落地 `two_stage.py`、`neighbors.py`、`profiling.py` 与 `mean_pool_cache.py`；脚本目录已重组为 `scripts/run/` 与 `scripts/command/`，根目录新增 `main.py` 作为统一入口。Phase 4 valid-only 全量实验矩阵与 cache 版本均已跑通，当前推荐方法为 `adaptive_neighbors + mean-pool cache`，在 14,385 条有效标注查询上达到 Recall@10 = 0.8523、nDCG@10 = 0.6325、平均延迟约 0.060 s/query；Phase 5 的最终论文、答辩 PPT 与整理提交仍待完成。
 
-> **v10 同步说明（2026-07-01）**：项目代码、README 快速开始、ACL 风格论文源码（`report/main.tex`）和最终 Markdown 报告（`docs/Report.md`）已经收口；早期阶段报告与 ACL 中文草稿已归档到 `docs/outdated/`，不再作为 `docs/` 根目录下的当前交付文档。
+> **v10 同步说明（2026-07-01）**：项目代码、README 快速开始、NeurIPS 模板论文源码（`report/main.tex`）和最终 Markdown 报告（`docs/Report.md`）已经收口；早期阶段报告与 ACL 中文草稿已归档到 `docs/outdated/`，不再作为 `docs/` 根目录下的当前交付文档。
 
 ---
 
@@ -1040,9 +1040,9 @@ class GroundTruthLoader:
 
 **目标**：基于已经完成的 Phase 3 / Phase 4 结果，收口最终论文、答辩材料与可提交代码包。
 
-> **2026-07-01 同步说明**：Phase 4 的代码、实验矩阵、cache 版本和最终报告已经齐备；当前最终文字交付为 `docs/Report.md`，英文 ACL 风格论文源码位于 `report/main.tex`。
+> **2026-07-01 同步说明**：Phase 4 的代码、实验矩阵、cache 版本和最终报告已经齐备；当前最终文字交付为 `docs/Report.md`，英文 NeurIPS 模板论文源码位于 `report/main.tex`。
 
-#### Step 5.1 实验报告（最终 Markdown 报告 + ACL 风格论文源码）
+#### Step 5.1 实验报告（最终 Markdown 报告 + NeurIPS 模板论文源码）
 
 | 章节         | 负责   | 内容要点                           |
 | ------------ | ------ | ---------------------------------- |
@@ -2123,7 +2123,7 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 ### Milestone 5：最终提交（6.9）
 
 - [x] 最终报告：`docs/Report.md`
-- [x] ACL 风格论文源码：`report/main.tex`
+- [x] NeurIPS 模板论文源码：`report/main.tex`
 - [ ] 答辩 PPT
 - [ ] 代码包整理（README、注释、死代码清理）
 - [ ] 最终提交

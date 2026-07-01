@@ -146,7 +146,7 @@ Valid-only query 分布如下：
 - Baseline valid-only schema：`outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/analysis/phase4_schema_valid_only/`
 - Final run：`outputs/eval_reports/phase4_adaptive_neighbors_cache_full_20260520/`
 - MeanPoolCache：`outputs/cache/mean_pool_full_20260520_rerun/`
-- ACL 风格论文源码：`report/main.tex`
+- NeurIPS 模板论文源码：`report/main.tex`
 - 图表产物：`report/figures/`
 
 ## 5. 实验结果

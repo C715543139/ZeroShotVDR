@@ -41,7 +41,7 @@ ZeroShotVDR/
 ├── data/                   # 本地数据与索引
 ├── docs/                   # 项目说明、计划与阶段报告
 ├── outputs/                # 评测输出、trace、metrics、cache 等
-├── report/                 # ACL 风格最终报告 LaTeX 源文件
+├── report/                 # NeurIPS 模板最终报告 LaTeX 源文件
 ├── scripts/
 │   ├── command/            # 环境检查、清理、进度查看等辅助命令
 │   └── run/                # Step 3 / Phase 4 评测入口
@@ -189,6 +189,6 @@ pytest -q tests/phase4
 
 - `outputs/eval_reports/`：评测结果、metrics、trace、slice / bucket 分析
 - `outputs/cache/`：mean-pool cache
-- `report/`：最终 ACL 风格报告源码和图表
+- `report/`：最终 NeurIPS 模板报告源码和图表
 
 `data/`、`outputs/`、`.cache/`、`.venv/` 等目录通常包含本地大文件或环境缓存，不应作为源码提交内容。
