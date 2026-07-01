@@ -4,9 +4,11 @@
 > **方法基础**：ColPali（Late Interaction + VLM）  
 > **数据集**：MMLongBench  
 > **硬件环境**：Ubuntu + 2x NVIDIA RTX 3090（24 GB 显存）+ Conda + uv  
-> **时间跨度**：2025.5.8 – 2025.6.9
+> **时间跨度**：2026.5.8 – 2026.7.1
 
 > **v9 同步说明（2026-05-20）**：本计划已按当前 Phase 4 完成状态同步。`src/zeroshot_vdr/advanced/` 已落地 `two_stage.py`、`neighbors.py`、`profiling.py` 与 `mean_pool_cache.py`；脚本目录已重组为 `scripts/run/` 与 `scripts/command/`，根目录新增 `main.py` 作为统一入口。Phase 4 valid-only 全量实验矩阵与 cache 版本均已跑通，当前推荐方法为 `adaptive_neighbors + mean-pool cache`，在 14,385 条有效标注查询上达到 Recall@10 = 0.8523、nDCG@10 = 0.6325、平均延迟约 0.060 s/query；Phase 5 的最终论文、答辩 PPT 与整理提交仍待完成。
+
+> **v10 同步说明（2026-07-01）**：项目代码、README 快速开始、ACL 风格论文源码（`report/main.tex`）和最终 Markdown 报告（`docs/Report.md`）已经收口；早期阶段报告与 ACL 中文草稿已归档到 `docs/outdated/`，不再作为 `docs/` 根目录下的当前交付文档。
 
 ---
 
@@ -148,8 +150,8 @@ ZeroShotVDR/
 │   ├── NJUProject_VDR.md          # 课程任务说明
 │   ├── Proposal_VDR.md            # 开题报告
 │   ├── Project_Plan.md            # 本文件：项目计划
-│   ├── Milestone_Report_Phase3.md # 阶段三里程碑报告
-│   ├── Milestone_Report_Phase4.md # 阶段四里程碑报告
+│   ├── Report.md                  # 最终 Markdown 报告
+│   ├── outdated/                  # 已归档的阶段报告与早期论文草稿
 │   └── revision/                  # 修订记录
 │       ├── core_module_revision_v1.md
 │       ├── core_module_revision_v2.md
@@ -955,14 +957,14 @@ class GroundTruthLoader:
 - [x] 基于失败分析，确定 Phase 4 主线为方向 B：查询自适应两阶段粗精检索
 - [x] 保留方向 A 作为补充实验 / 未来工作
 - [x] 完成方向决策文档：`docs/revision/step3_direction_revision_v1.md`
-- [x] 完成里程碑报告：`docs/Milestone_Report_Phase3.md`
+- [x] 完成里程碑报告：`docs/outdated/Milestone_Report_Phase3.md`
 
 #### Phase 3 产出
 
 - [x] `outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/`（稳定语义 full run 结果）
 - [x] `outputs/eval_reports/step3_docqa_full_dual3090_stable_page_ids/analysis/`（Step 3.2 分析结果）
 - [x] `docs/revision/step3_direction_revision_v1.md`
-- [x] `docs/Milestone_Report_Phase3.md`
+- [x] `docs/outdated/Milestone_Report_Phase3.md`
 
 ---
 
@@ -1030,7 +1032,7 @@ class GroundTruthLoader:
 - [x] `scripts/run/run_phase4_eval.py`、`scripts/analyze_phase4_trace.py` 与 `main.py`
 - [x] valid-only 全量主表、slice 表、bucket 表与 per-query trace
 - [x] cache 与 no-cache 对比实验
-- [x] `docs/Milestone_Report_Phase4.md`
+- [x] `docs/outdated/Milestone_Report_Phase4.md`
 
 ---
 
@@ -1038,9 +1040,9 @@ class GroundTruthLoader:
 
 **目标**：基于已经完成的 Phase 3 / Phase 4 结果，收口最终论文、答辩材料与可提交代码包。
 
-> **2026-05-20 同步说明**：Phase 4 的代码、实验矩阵和里程碑报告已经齐备，Phase 5 的重点已从“补实验”切换为“整理主表、提炼结论、撰写正式报告和答辩材料”。
+> **2026-07-01 同步说明**：Phase 4 的代码、实验矩阵、cache 版本和最终报告已经齐备；当前最终文字交付为 `docs/Report.md`，英文 ACL 风格论文源码位于 `report/main.tex`。
 
-#### Step 5.1 实验报告（NeurIPS 模板，英文，正文 8-9 页）
+#### Step 5.1 实验报告（最终 Markdown 报告 + ACL 风格论文源码）
 
 | 章节         | 负责   | 内容要点                           |
 | ------------ | ------ | ---------------------------------- |
@@ -1062,17 +1064,18 @@ class GroundTruthLoader:
 - [x] 完成脚本目录重组（`scripts/run/`、`scripts/command/`）
 - [x] 新增 `main.py` 统一入口
 - [ ] 统一剩余 docstring、type hints 与帮助文本
-- [ ] 编写或补齐最终 `README.md` 的快速开始与复现实验指引
+- [x] 编写或补齐最终 `README.md` 的快速开始与复现实验指引
 - [ ] 复核 `uv sync` / `.venv` 环境的一键复现说明
 - [ ] 最终清理调试产物并打包提交
 
 #### Phase 5 产出
 
-- [x] `docs/Milestone_Report_Phase4.md`
-- [ ] 实验报告 PDF
+- [x] `docs/outdated/Milestone_Report_Phase4.md`
+- [x] `docs/Report.md`
+- [x] `report/main.tex`
 - [ ] 答辩 PPT
 - [ ] 最终代码包
-- [ ] README.md
+- [x] README.md
 
 ---
 
@@ -2107,7 +2110,7 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 - [x] 跨档位趋势图（K4-K128）和跨子任务对比分析
 - [x] Bad Cases 分析完成，并剥离 `no_ground_truth` 样本
 - [x] 改进方向已确定
-- [x] `docs/Milestone_Report_Phase3.md` 已提交
+- [x] `docs/outdated/Milestone_Report_Phase3.md` 已提交
 
 ### Milestone 4：进阶方法完成（6.2）
 
@@ -2115,11 +2118,12 @@ MaxSim 计算复杂度为 O(m x n x d)，其中 m = 查询 token 数，n = 页�
 - [x] Baseline vs. 改进方法对比实验完成
 - [x] 消融实验完成
 - [x] 效率对比数据齐全
-- [x] `docs/Milestone_Report_Phase4.md` 已提交
+- [x] `docs/outdated/Milestone_Report_Phase4.md` 已提交
 
 ### Milestone 5：最终提交（6.9）
 
-- [ ] 实验报告 PDF（NeurIPS 模板，8-9 页）
+- [x] 最终报告：`docs/Report.md`
+- [x] ACL 风格论文源码：`report/main.tex`
 - [ ] 答辩 PPT
 - [ ] 代码包整理（README、注释、死代码清理）
 - [ ] 最终提交

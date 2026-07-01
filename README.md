@@ -16,9 +16,9 @@ ZeroShotVDR 是一个面向 **零样本视觉文档检索**（Zero-Shot Visual D
 
 - 课程任务说明：[docs/NJUProject_VDR.md](docs/NJUProject_VDR.md)
 - 项目计划与环境细节：[docs/Project_Plan.md](docs/Project_Plan.md)
-- 阶段四结果报告：[docs/Milestone_Report_Phase4.md](docs/Milestone_Report_Phase4.md)
+- 最终 Markdown 报告：[docs/Report.md](docs/Report.md)
 - 最终论文源码：[report/main.tex](report/main.tex)
-- 中文论文对照：[docs/ACL_Report_CN.md](docs/ACL_Report_CN.md)
+- 归档阶段报告：[docs/outdated/Milestone_Report_Phase4.md](docs/outdated/Milestone_Report_Phase4.md)
 
 ## 结果摘要
 
